@@ -132,7 +132,7 @@
 .btm-folder-card-item { position: relative; min-width: 0; display: block; }
 .btm-folder-card { min-width: 0; min-height: 96px; display: grid; grid-template-columns: 38px minmax(0, 1fr); grid-template-rows: auto auto; align-content: center; align-items: center; gap: 2px 8px; padding: 10px; text-align: left; border: 1px solid rgba(212, 173, 102, .42); border-radius: 13px; background: linear-gradient(145deg, rgba(252, 254, 255, .86), rgba(226, 242, 251, .74)); color: var(--btm-ink); cursor: pointer; box-shadow: 0 4px 14px rgba(59, 110, 142, .09); backdrop-filter: blur(8px); }
 .btm-folder-card-item .btm-folder-card { width: 100%; }
-.btm-folder-card-remove { position: absolute; top: 5px; right: 5px; width: 23px; height: 23px; padding: 0; border: 1px solid rgba(154, 90, 85, .25); border-radius: 50%; background: rgba(255, 250, 248, .92); color: var(--btm-danger); line-height: 19px; cursor: pointer; }
+.btm-folder-card.btm-selected { border-color: var(--btm-accent); box-shadow: 0 0 0 2px rgba(78, 168, 213, .2), 0 4px 14px rgba(57, 108, 140, .13); }
 .btm-folder-card strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 17px; }
 .btm-folder-card small { grid-column: 1 / -1; color: var(--btm-muted); font-size: 11px; }
 .btm-folder-icon { color: var(--btm-gold); font-size: 28px; filter: saturate(.8); }
