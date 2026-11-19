@@ -18,12 +18,12 @@ import { DEFAULT_FILTER_STATE } from '../../../filters.js';
 import { download, equalsIgnoreCaseAndAccents, uuidv4 } from '../../../utils.js';
 
 const EXTENSION_KEY = 'bulkTagStudio';
-const PLUGIN_VERSION = '2.2.0';
+const PLUGIN_VERSION = '2.3.0';
 const selectedAvatars = new Set();
 let recentTrackerBound = false;
 let updateReloadBound = false;
 const state = {
-    tab: 'characters',
+    tab: 'folders',
     sort: 'recent',
     currentFolderId: null,
     folderFilterId: null,
@@ -707,12 +707,6 @@ function renderFoldersPage() {
         for (const folder of rootFolders) folderList.append(createRootFolderCard(folder));
         if (!rootFolders.length) folderList.append(emptyMessage('还没有标签。新建第一个分类吧。'));
         page.append(folderList);
-
-        const danger = document.createElement('details');
-        danger.className = 'btm-danger-zone';
-        danger.innerHTML = '<summary>危险操作</summary><p>清空所有标签会先下载备份，不会删除角色卡。</p><button type="button">清空全部标签</button>';
-        danger.querySelector('button').addEventListener('click', clearAllTags);
-        page.append(danger);
     }
 }
 
@@ -771,7 +765,7 @@ function openPanel() {
     cleanupFolderMetadata();
     renderPreview();
     switchTab(state.tab);
-    document.querySelector(selectors.search)?.focus();
+    if (state.tab === 'characters') document.querySelector(selectors.search)?.focus();
 }
 
 function createPanel() {
@@ -787,8 +781,8 @@ function createPanel() {
                 <button id="btm-close" type="button" aria-label="关闭">✕</button>
             </header>
             <nav class="btm-tabs" aria-label="功能页面">
-                <button type="button" class="btm-tab btm-active" data-tab="characters">角色管理</button>
-                <button type="button" class="btm-tab" data-tab="folders">分类文件夹</button>
+                <button type="button" class="btm-tab btm-active" data-tab="folders">分类文件夹</button>
+                <button type="button" class="btm-tab" data-tab="characters">角色管理</button>
             </nav>
             <section id="btm-characters-page" class="btm-page">
                 <div class="btm-toolbar">
@@ -820,6 +814,13 @@ function createPanel() {
                         <button id="btm-delete-selected" type="button" class="btm-danger">删除已选角色</button>
                         <label class="btm-delete-chats"><input id="btm-delete-chats" type="checkbox"> 同时删除聊天记录</label>
                     </div>
+                    <details class="btm-danger-zone btm-danger-zone-compact">
+                        <summary>高级操作</summary>
+                        <div class="btm-danger-content">
+                            <p>清空所有标签会先下载备份，不会删除角色卡。</p>
+                            <button id="btm-clear-all-tags" type="button">清空全部标签</button>
+                        </div>
+                    </details>
                 </div>
             </section>
             <section id="btm-folders-page" class="btm-page" hidden></section>
@@ -837,6 +838,7 @@ function createPanel() {
     root.querySelector(selectors.input).addEventListener('input', () => { renderPreview(); setStatus(''); });
     root.querySelector('#btm-apply').addEventListener('click', applyTags);
     root.querySelector('#btm-delete-selected').addEventListener('click', deleteSelectedCharacters);
+    root.querySelector('#btm-clear-all-tags').addEventListener('click', clearAllTags);
     root.querySelector('#btm-select-visible').addEventListener('click', () => {
         for (const character of visibleCharacters()) selectedAvatars.add(character.avatar);
         renderCharacterList();
@@ -871,9 +873,10 @@ export function init() {
         });
     }
 
-    const editButton = toolbar.querySelector('#bulkEditButton');
-    if (editButton) {
-        if (button.previousElementSibling !== editButton) editButton.insertAdjacentElement('afterend', button);
+    const filterRow = document.querySelector('#rm_characters_block .rm_tag_controls')
+        || document.querySelector('.rm_tag_controls');
+    if (filterRow) {
+        if (button.parentElement !== filterRow || button !== filterRow.lastElementChild) filterRow.append(button);
     } else if (button.parentElement !== toolbar) {
         toolbar.append(button);
     }
