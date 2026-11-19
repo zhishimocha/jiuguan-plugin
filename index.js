@@ -19,6 +19,7 @@ import { download, equalsIgnoreCaseAndAccents, uuidv4 } from '../../../utils.js'
 
 const EXTENSION_KEY = 'bulkTagStudio';
 const selectedAvatars = new Set();
+let recentTrackerBound = false;
 const state = {
     tab: 'characters',
     sort: 'recent',
@@ -43,6 +44,7 @@ function settings() {
     value.schemaVersion = 2;
     value.folderParents ??= {};
     value.folderOrder ??= [];
+    value.recentOpened ??= {};
     return value;
 }
 
@@ -116,18 +118,58 @@ function charactersForFolder(folderId, includeDescendants = true) {
     return availableCharacters().filter(character => (tag_map[character.avatar] || []).some(id => folderIds.has(id)));
 }
 
+function normalizedName(character) {
+    return String(character?.name || '')
+        .normalize('NFKC')
+        .replace(/[\p{P}\p{S}]/gu, '')
+        .trim();
+}
+
 function localeNameCompare(a, b) {
-    return String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN', { sensitivity: 'base', numeric: true });
+    const first = normalizedName(a);
+    const second = normalizedName(b);
+    const firstStartsLatin = /^[A-Za-z]/u.test(first);
+    const secondStartsLatin = /^[A-Za-z]/u.test(second);
+    if (firstStartsLatin !== secondStartsLatin) return firstStartsLatin ? -1 : 1;
+    return first.localeCompare(second, 'zh-CN-u-co-pinyin', { sensitivity: 'base', numeric: true });
+}
+
+function timestampValue(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function recentValue(character) {
+    return Number(settings().recentOpened[character.avatar])
+        || timestampValue(character.date_last_chat)
+        || timestampValue(character.create_date);
+}
+
+function bindRecentTracker() {
+    if (recentTrackerBound) return;
+    recentTrackerBound = true;
+    document.addEventListener('click', event => {
+        const card = event.target.closest?.('.character_select[data-chid]');
+        if (!card) return;
+        const character = characters[Number(card.dataset.chid)];
+        if (!character?.avatar) return;
+        settings().recentOpened[character.avatar] = Date.now();
+        saveSettingsDebounced();
+    }, true);
 }
 
 function sortedCharacters(items) {
     const copy = [...items];
-    if (state.sort === 'az') return copy.sort(localeNameCompare);
-    if (state.sort === 'za') return copy.sort((a, b) => localeNameCompare(b, a));
-    if (state.sort === 'newest') {
-        return copy.sort((a, b) => (Number(b.create_date) || 0) - (Number(a.create_date) || 0) || localeNameCompare(a, b));
+    const sort = document.querySelector('#btm-sort')?.value || state.sort;
+    if (sort === 'az') return copy.sort(localeNameCompare);
+    if (sort === 'za') return copy.sort((a, b) => localeNameCompare(b, a));
+    if (sort === 'newest') {
+        return copy.sort((a, b) => timestampValue(b.create_date) - timestampValue(a.create_date) || localeNameCompare(a, b));
     }
-    return copy.sort((a, b) => (Number(b.date_last_chat) || 0) - (Number(a.date_last_chat) || 0) || localeNameCompare(a, b));
+    return copy.sort((a, b) => recentValue(b) - recentValue(a) || localeNameCompare(a, b));
 }
 
 function visibleCharacters() {
@@ -325,18 +367,25 @@ function renderBreadcrumbs(container) {
         trail.unshift(tag);
         id = parentOf(id);
     }
-    const root = document.createElement('button');
-    root.type = 'button';
-    root.textContent = '全部分类';
-    root.addEventListener('click', () => {
-        state.currentFolderId = null;
-        state.editingFolderId = null;
-        renderFoldersPage();
-    });
-    container.append(root);
-    for (const tag of trail) {
-        const sep = document.createElement('span');
-        sep.textContent = '›';
+    if (state.currentFolderId) {
+        const root = document.createElement('button');
+        root.type = 'button';
+        root.textContent = '‹';
+        root.title = '返回最外层';
+        root.setAttribute('aria-label', '返回最外层');
+        root.addEventListener('click', () => {
+            state.currentFolderId = null;
+            state.editingFolderId = null;
+            renderFoldersPage();
+        });
+        container.append(root);
+    }
+    trail.forEach((tag, index) => {
+        if (index > 0) {
+            const sep = document.createElement('span');
+            sep.textContent = '›';
+            container.append(sep);
+        }
         const button = document.createElement('button');
         button.type = 'button';
         button.textContent = tag.name;
@@ -345,8 +394,8 @@ function renderBreadcrumbs(container) {
             state.editingFolderId = null;
             renderFoldersPage();
         });
-        container.append(sep, button);
-    }
+        container.append(button);
+    });
 }
 
 function createFolderRow(tag) {
@@ -445,13 +494,13 @@ function saveFolderEdit(id, rawName, newParentId) {
         const confirmed = window.confirm(`已有“${duplicate.name}”。继续会把两个标签合并，所有角色卡与子文件夹都会并入同一个分类。确定吗？`);
         if (!confirmed) return;
         mergeFolders(id, duplicate.id, newParentId);
-        state.editingFolderId = duplicate.id;
     } else {
         tag.name = name;
         if (newParentId) settings().folderParents[id] = newParentId;
         else delete settings().folderParents[id];
         persist();
     }
+    state.editingFolderId = null;
     refreshNativeTags();
     renderFoldersPage();
 }
@@ -550,7 +599,6 @@ function renderFoldersPage() {
     page.append(folderList);
 
     if (state.currentFolderId) {
-        if (state.editingFolderId === state.currentFolderId) renderFolderEditor(page, tagById(state.currentFolderId));
         const currentBar = document.createElement('div');
         currentBar.className = 'btm-current-folder-bar';
         const title = document.createElement('h3');
@@ -562,14 +610,7 @@ function renderFoldersPage() {
             state.onlyCurrentFolder = event.target.checked;
             renderFoldersPage();
         });
-        const editCurrent = document.createElement('button');
-        editCurrent.type = 'button';
-        editCurrent.textContent = state.editingFolderId === state.currentFolderId ? '收起编辑' : '编辑当前文件夹';
-        editCurrent.addEventListener('click', () => {
-            state.editingFolderId = state.editingFolderId === state.currentFolderId ? null : state.currentFolderId;
-            renderFoldersPage();
-        });
-        currentBar.append(title, toggle, editCurrent);
+        currentBar.append(title, toggle);
         page.append(currentBar);
 
         const cards = document.createElement('div');
@@ -653,7 +694,7 @@ function createPanel() {
         <div class="btm-backdrop" aria-hidden="true"></div>
         <section class="btm-panel" role="dialog" aria-modal="true" aria-labelledby="btm-title">
             <header class="btm-header">
-                <div><h2 id="btm-title">角色卡整理器</h2><p>批量标签、文件夹分类与角色管理</p></div>
+                <h2 id="btm-title">角色管理器</h2>
                 <button id="btm-close" type="button" aria-label="关闭">✕</button>
             </header>
             <nav class="btm-tabs" aria-label="功能页面">
@@ -679,15 +720,17 @@ function createPanel() {
                 </div>
                 <div id="btm-character-list" class="btm-list"></div>
                 <div class="btm-composer">
-                    <label for="btm-tags-input">给已选角色添加标签 / 文件夹</label>
+                    <label for="btm-tags-input">给已选角色添加标签</label>
                     <textarea id="btm-tags-input" rows="2" placeholder="例如：年下 狗男，温柔"></textarea>
                     <div id="btm-preview" class="btm-preview"></div>
                     <div id="btm-status" class="btm-status" role="status" aria-live="polite"></div>
                     <div class="btm-primary-actions">
                         <button id="btm-apply" type="button">添加到已选角色</button>
-                        <button id="btm-delete-selected" type="button" class="btm-danger">删除已选角色</button>
                     </div>
-                    <label class="btm-delete-chats"><input id="btm-delete-chats" type="checkbox"> 删除角色时同时删除聊天记录</label>
+                    <div class="btm-delete-row">
+                        <button id="btm-delete-selected" type="button" class="btm-danger">删除已选角色</button>
+                        <label class="btm-delete-chats"><input id="btm-delete-chats" type="checkbox"> 同时删除聊天记录</label>
+                    </div>
                 </div>
             </section>
             <section id="btm-folders-page" class="btm-page" hidden></section>
@@ -721,16 +764,29 @@ function createPanel() {
 export function init() {
     const toolbar = document.querySelector('#rm_print_characters_pagination');
     if (!toolbar) return;
+    bindRecentTracker();
     createPanel();
-    if (document.querySelector('#btm-open')) return;
-    const button = document.createElement('button');
-    button.id = 'btm-open';
-    button.type = 'button';
-    button.className = 'menu_button fa-solid fa-folder-tree';
-    button.title = '角色卡整理器';
-    button.setAttribute('aria-label', '角色卡整理器');
-    button.addEventListener('click', openPanel);
-    toolbar.append(button);
+    let button = document.querySelector('#btm-open');
+    if (!button) {
+        button = document.createElement('i');
+        button.id = 'btm-open';
+        button.className = 'menu_button fa-solid fa-layer-group';
+        button.title = '角色管理器';
+        button.setAttribute('aria-label', '打开角色管理器');
+        button.setAttribute('role', 'button');
+        button.tabIndex = 0;
+        button.addEventListener('click', openPanel);
+        button.addEventListener('keydown', event => {
+            if (event.key === 'Enter' || event.key === ' ') openPanel();
+        });
+    }
+
+    const editButton = toolbar.querySelector('#bulkEditButton');
+    if (editButton) {
+        if (button.previousElementSibling !== editButton) editButton.insertAdjacentElement('afterend', button);
+    } else if (button.parentElement !== toolbar) {
+        toolbar.append(button);
+    }
 }
 
 // 兼容 SillyTavern 1.16：分页工具栏可能晚于扩展加载，也可能被重新绘制。
