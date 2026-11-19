@@ -18,13 +18,15 @@ import { DEFAULT_FILTER_STATE } from '../../../filters.js';
 import { download, equalsIgnoreCaseAndAccents, uuidv4 } from '../../../utils.js';
 
 const EXTENSION_KEY = 'bulkTagStudio';
+const PLUGIN_VERSION = '2.2.0';
 const selectedAvatars = new Set();
 let recentTrackerBound = false;
+let updateReloadBound = false;
 const state = {
     tab: 'characters',
     sort: 'recent',
     currentFolderId: null,
-    onlyCurrentFolder: false,
+    folderFilterId: null,
     editingFolderId: null,
 };
 
@@ -161,9 +163,51 @@ function bindRecentTracker() {
     }, true);
 }
 
-function sortedCharacters(items) {
+function bindReloadAfterExtensionUpdate() {
+    if (updateReloadBound) return;
+    updateReloadBound = true;
+    document.addEventListener('click', event => {
+        const control = event.target.closest?.('button, .menu_button, [role="button"]');
+        if (!control) return;
+        const label = `${control.textContent || ''} ${control.title || ''} ${control.getAttribute('aria-label') || ''}`.trim();
+        const extensionRow = control.closest?.('[data-extension-name], .extension_block, .extension-item, li, tr');
+        const rowText = extensionRow?.textContent || '';
+        const isBulkUpdate = /Update all|Update enabled|更新全部|更新已启用/i.test(label);
+        const isThisPluginUpdate = /Update|更新/i.test(label) && /角色卡整理器|jiuguan-plugin/i.test(rowText);
+        if (isBulkUpdate || isThisPluginUpdate) watchForUpdatedManifest();
+    }, true);
+}
+
+function watchForUpdatedManifest() {
+    if (sessionStorage.getItem('btm-update-reload-pending') === '1') return;
+    sessionStorage.setItem('btm-update-reload-pending', '1');
+    let attempts = 0;
+    const manifestUrl = new URL('./manifest.json', import.meta.url);
+    const timer = setInterval(async () => {
+        attempts += 1;
+        try {
+            manifestUrl.searchParams.set('refresh', String(Date.now()));
+            const response = await fetch(manifestUrl, { cache: 'no-store' });
+            const manifest = response.ok ? await response.json() : null;
+            if (manifest?.version && manifest.version !== PLUGIN_VERSION) {
+                clearInterval(timer);
+                sessionStorage.removeItem('btm-update-reload-pending');
+                location.reload();
+                return;
+            }
+        } catch (error) {
+            console.debug('[角色卡整理器] 等待扩展更新完成', error);
+        }
+        if (attempts >= 60) {
+            clearInterval(timer);
+            sessionStorage.removeItem('btm-update-reload-pending');
+        }
+    }, 1000);
+}
+
+function sortedCharacters(items, requestedSort = null) {
     const copy = [...items];
-    const sort = document.querySelector('#btm-sort')?.value || state.sort;
+    const sort = requestedSort || document.querySelector('#btm-sort')?.value || state.sort;
     if (sort === 'az') return copy.sort(localeNameCompare);
     if (sort === 'za') return copy.sort((a, b) => localeNameCompare(b, a));
     if (sort === 'newest') {
@@ -276,6 +320,16 @@ function renderPreview() {
     }
 }
 
+function resetCharacterActions() {
+    selectedAvatars.clear();
+    const input = document.querySelector(selectors.input);
+    if (input) input.value = '';
+    const deleteChats = document.querySelector('#btm-delete-chats');
+    if (deleteChats) deleteChats.checked = false;
+    renderPreview();
+    renderCharacterList();
+}
+
 function setStatus(message, isError = false) {
     const status = document.querySelector(selectors.status);
     if (!status) return;
@@ -323,8 +377,8 @@ function applyTags() {
     try {
         const tagObjects = names.map(makeTag);
         const changed = addTagsToEntity(tagObjects, targets);
-        renderCharacterList();
         setStatus(changed ? `已为 ${targets.length} 张角色卡添加：${names.join('、')}` : '这些角色卡已经有了所输入的标签。');
+        resetCharacterActions();
     } catch (error) {
         console.error('[角色卡整理器] 添加失败', error);
         setStatus('添加失败，请查看浏览器控制台。', true);
@@ -343,9 +397,8 @@ async function deleteSelectedCharacters() {
     setStatus('正在删除，请不要关闭页面……');
     try {
         await deleteCharacter(targets, { deleteChats });
-        targets.forEach(avatar => selectedAvatars.delete(avatar));
-        renderCharacterList();
         setStatus(`已删除 ${targets.length} 张角色卡。`);
+        resetCharacterActions();
     } catch (error) {
         console.error('[角色卡整理器] 删除失败', error);
         setStatus('删除未完成，请查看酒馆提示或浏览器控制台。', true);
@@ -356,72 +409,90 @@ function folderCount(folderId) {
     return charactersForFolder(folderId, true).length;
 }
 
-function renderBreadcrumbs(container) {
-    const trail = [];
-    let id = state.currentFolderId;
-    const visited = new Set();
-    while (id && !visited.has(id)) {
-        visited.add(id);
-        const tag = tagById(id);
-        if (!tag) break;
-        trail.unshift(tag);
-        id = parentOf(id);
-    }
-    if (state.currentFolderId) {
-        const root = document.createElement('button');
-        root.type = 'button';
-        root.textContent = '‹';
-        root.title = '返回最外层';
-        root.setAttribute('aria-label', '返回最外层');
-        root.addEventListener('click', () => {
-            state.currentFolderId = null;
-            state.editingFolderId = null;
-            renderFoldersPage();
-        });
-        container.append(root);
-    }
-    trail.forEach((tag, index) => {
-        if (index > 0) {
-            const sep = document.createElement('span');
-            sep.textContent = '›';
-            container.append(sep);
-        }
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.textContent = tag.name;
-        button.addEventListener('click', () => {
-            state.currentFolderId = tag.id;
-            state.editingFolderId = null;
-            renderFoldersPage();
-        });
-        container.append(button);
-    });
-}
-
-function createFolderRow(tag) {
-    const row = document.createElement('div');
-    row.className = 'btm-folder-row';
+function createRootFolderCard(tag) {
     const open = document.createElement('button');
     open.type = 'button';
-    open.className = 'btm-folder-open';
-    open.innerHTML = `<span class="btm-folder-icon">📁</span><span><strong></strong><small></small></span>`;
+    open.className = 'btm-folder-card';
+    open.innerHTML = `<span class="btm-folder-icon">📁</span><strong></strong><small></small>`;
     open.querySelector('strong').textContent = tag.name;
     open.querySelector('small').textContent = `${folderCount(tag.id)} 张角色卡 · ${childrenOf(tag.id).length} 个子文件夹`;
     open.addEventListener('click', () => {
         state.currentFolderId = tag.id;
+        state.folderFilterId = null;
         state.editingFolderId = null;
         renderFoldersPage();
     });
-    const edit = document.createElement('button');
-    edit.type = 'button';
-    edit.className = 'btm-folder-edit';
-    edit.textContent = '编辑';
-    edit.addEventListener('click', () => {
-        state.editingFolderId = state.editingFolderId === tag.id ? null : tag.id;
+    return open;
+}
+
+function descendantFolders(folderId) {
+    return descendantIds(folderId).map(tagById).filter(Boolean);
+}
+
+function renderSubfolderChips(container, folderId) {
+    const all = document.createElement('button');
+    all.type = 'button';
+    all.className = 'btm-subfolder-chip';
+    all.classList.toggle('btm-active', !state.folderFilterId);
+    all.textContent = '全部';
+    all.addEventListener('click', () => {
+        state.folderFilterId = null;
+        state.editingFolderId = null;
         renderFoldersPage();
     });
-    row.append(open, edit);
-    return row;
+    container.append(all);
+
+    for (const folder of descendantFolders(folderId)) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'btm-subfolder-chip';
+        chip.classList.toggle('btm-active', state.folderFilterId === folder.id);
+        chip.textContent = folder.name;
+        chip.title = folderPath(folder.id);
+        chip.addEventListener('click', () => {
+            state.folderFilterId = folder.id;
+            state.editingFolderId = null;
+            renderFoldersPage();
+        });
+        container.append(chip);
+    }
+}
+
+async function openCharacterFromFolder(character) {
+    const id = characters.findIndex(item => item?.avatar === character.avatar);
+    if (id < 0) return;
+    settings().recentOpened[character.avatar] = Date.now();
+    saveSettingsDebounced();
+    closePanel();
+    try {
+        const context = globalThis.SillyTavern?.getContext?.();
+        const scriptModule = typeof context?.selectCharacterById === 'function' ? null : await import('../../../../script.js');
+        const selectCharacter = context?.selectCharacterById || scriptModule?.selectCharacterById;
+        if (typeof selectCharacter === 'function') {
+            await selectCharacter(id, { switchMenu: false });
+        } else {
+            const nativeCard = document.querySelector(`.character_select[data-chid="${id}"]`);
+            if (!nativeCard) throw new Error('当前酒馆版本未提供角色切换接口');
+            nativeCard.click();
+        }
+    } catch (error) {
+        console.error('[角色卡整理器] 无法打开角色最近聊天', error);
+    }
+}
+
+function createFolderCharacterCard(character) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'btm-folder-character';
+    const image = document.createElement('img');
+    image.src = thumbnailUrl(character.avatar);
+    image.alt = '';
+    image.loading = 'lazy';
+    const name = document.createElement('strong');
+    name.textContent = character.name;
+    card.append(image, name);
+    card.addEventListener('click', () => openCharacterFromFolder(character));
+    return card;
 }
 
 function renderFolderEditor(container, tag) {
@@ -478,7 +549,8 @@ function createFolder(parentId) {
     const tag = makeTag(name);
     if (parentId) settings().folderParents[tag.id] = parentId;
     persist();
-    state.editingFolderId = tag.id;
+    state.editingFolderId = null;
+    if (parentId && state.currentFolderId) state.folderFilterId = tag.id;
     renderFoldersPage();
 }
 
@@ -562,6 +634,7 @@ function deleteFolder(id) {
     const tagIndex = tags.findIndex(item => item.id === id);
     if (tagIndex >= 0) tags.splice(tagIndex, 1);
     if (state.currentFolderId === id) state.currentFolderId = parentId;
+    if (state.folderFilterId === id) state.folderFilterId = null;
     state.editingFolderId = null;
     persist();
     refreshNativeTags();
@@ -573,59 +646,91 @@ function renderFoldersPage() {
     if (!page) return;
     cleanupFolderMetadata();
     if (state.currentFolderId && !tagById(state.currentFolderId)) state.currentFolderId = null;
+    if (state.folderFilterId && !tagById(state.folderFilterId)) state.folderFilterId = null;
     page.replaceChildren();
 
-    const toolbar = document.createElement('div');
-    toolbar.className = 'btm-folder-toolbar';
-    const breadcrumbs = document.createElement('nav');
-    breadcrumbs.className = 'btm-breadcrumbs';
-    renderBreadcrumbs(breadcrumbs);
-    const add = document.createElement('button');
-    add.type = 'button';
-    add.className = 'btm-primary-small';
-    add.textContent = state.currentFolderId ? '＋ 新建子文件夹' : '＋ 新建文件夹';
-    add.addEventListener('click', () => createFolder(state.currentFolderId));
-    toolbar.append(breadcrumbs, add);
-    page.append(toolbar);
-
-    const folderList = document.createElement('div');
-    folderList.className = 'btm-folder-list';
-    const childFolders = childrenOf(state.currentFolderId);
-    for (const folder of childFolders) {
-        folderList.append(createFolderRow(folder));
-        if (state.editingFolderId === folder.id) renderFolderEditor(folderList, folder);
-    }
-    if (!childFolders.length) folderList.append(emptyMessage(state.currentFolderId ? '这里还没有子文件夹' : '还没有标签。新建第一个分类吧。'));
-    page.append(folderList);
-
+    const header = document.createElement('div');
+    header.className = 'btm-folder-page-header';
+    const heading = document.createElement('div');
+    heading.className = 'btm-folder-page-title';
     if (state.currentFolderId) {
-        const currentBar = document.createElement('div');
-        currentBar.className = 'btm-current-folder-bar';
-        const title = document.createElement('h3');
-        title.textContent = `“${tagById(state.currentFolderId).name}”里的角色`;
-        const toggle = document.createElement('label');
-        toggle.innerHTML = '<input type="checkbox"> 仅看本层';
-        toggle.querySelector('input').checked = state.onlyCurrentFolder;
-        toggle.querySelector('input').addEventListener('change', event => {
-            state.onlyCurrentFolder = event.target.checked;
+        const back = document.createElement('button');
+        back.type = 'button';
+        back.textContent = '‹';
+        back.title = '返回分类列表';
+        back.setAttribute('aria-label', '返回分类列表');
+        back.addEventListener('click', () => {
+            state.currentFolderId = null;
+            state.folderFilterId = null;
+            state.editingFolderId = null;
             renderFoldersPage();
         });
-        currentBar.append(title, toggle);
-        page.append(currentBar);
+        const title = document.createElement('strong');
+        title.textContent = tagById(state.currentFolderId).name;
+        heading.append(back, title);
+    } else {
+        const title = document.createElement('strong');
+        title.textContent = '分类';
+        heading.append(title);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'btm-folder-page-actions';
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'btm-folder-header-button';
+    add.textContent = '＋ 新建';
+    add.title = state.currentFolderId ? '在当前分类中新建子分类' : '新建一级分类';
+    add.addEventListener('click', () => createFolder(state.folderFilterId || state.currentFolderId));
+    actions.append(add);
+    if (state.currentFolderId) {
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'btm-folder-header-button';
+        edit.textContent = '编辑';
+        edit.title = state.folderFilterId ? '编辑当前选中的子分类' : '编辑当前分类';
+        edit.addEventListener('click', () => {
+            const targetId = state.folderFilterId || state.currentFolderId;
+            state.editingFolderId = state.editingFolderId === targetId ? null : targetId;
+            renderFoldersPage();
+        });
+        actions.append(edit);
+    }
+    header.append(heading, actions);
+    page.append(header);
+
+    if (state.currentFolderId) {
+        const subfolders = document.createElement('div');
+        subfolders.className = 'btm-subfolder-strip';
+        renderSubfolderChips(subfolders, state.currentFolderId);
+        page.append(subfolders);
+
+        if (state.editingFolderId) {
+            const editingFolder = tagById(state.editingFolderId);
+            if (editingFolder) renderFolderEditor(page, editingFolder);
+        }
 
         const cards = document.createElement('div');
         cards.className = 'btm-folder-cards';
-        const folderCharacters = sortedCharacters(charactersForFolder(state.currentFolderId, !state.onlyCurrentFolder));
-        for (const character of folderCharacters) cards.append(createCharacterRow(character, { selectable: false }));
+        const activeFolderId = state.folderFilterId || state.currentFolderId;
+        const folderCharacters = sortedCharacters(charactersForFolder(activeFolderId, true), 'recent');
+        for (const character of folderCharacters) cards.append(createFolderCharacterCard(character));
         if (!folderCharacters.length) cards.append(emptyMessage('这个分类里还没有角色卡'));
         page.append(cards);
-    }
+    } else {
+        const folderList = document.createElement('div');
+        folderList.className = 'btm-folder-list';
+        const rootFolders = childrenOf(null);
+        for (const folder of rootFolders) folderList.append(createRootFolderCard(folder));
+        if (!rootFolders.length) folderList.append(emptyMessage('还没有标签。新建第一个分类吧。'));
+        page.append(folderList);
 
-    const danger = document.createElement('details');
-    danger.className = 'btm-danger-zone';
-    danger.innerHTML = '<summary>危险操作</summary><p>清空所有标签会先下载备份，不会删除角色卡。</p><button type="button">清空全部标签</button>';
-    danger.querySelector('button').addEventListener('click', clearAllTags);
-    page.append(danger);
+        const danger = document.createElement('details');
+        danger.className = 'btm-danger-zone';
+        danger.innerHTML = '<summary>危险操作</summary><p>清空所有标签会先下载备份，不会删除角色卡。</p><button type="button">清空全部标签</button>';
+        danger.querySelector('button').addEventListener('click', clearAllTags);
+        page.append(danger);
+    }
 }
 
 function clearAllTags() {
@@ -642,6 +747,7 @@ function clearAllTags() {
         for (const key of Object.keys(tag_map)) delete tag_map[key];
         extension_settings[EXTENSION_KEY] = { schemaVersion: 2, folderParents: {}, folderOrder: [] };
         state.currentFolderId = null;
+        state.folderFilterId = null;
         state.editingFolderId = null;
         refreshNativeTags();
         renderCharacterList();
@@ -765,6 +871,7 @@ export function init() {
     const toolbar = document.querySelector('#rm_print_characters_pagination');
     if (!toolbar) return;
     bindRecentTracker();
+    bindReloadAfterExtensionUpdate();
     createPanel();
     let button = document.querySelector('#btm-open');
     if (!button) {
