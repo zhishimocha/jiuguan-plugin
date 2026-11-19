@@ -1,6 +1,14 @@
 # 角色卡整理器（Bulk Tag Studio）
 
-适配 SillyTavern 1.16.x 的本地第三方扩展。
+适配 SillyTavern 1.16.x 的第三方扩展。
+
+## 从酒馆扩展页安装
+
+在 SillyTavern 的“扩展”页面选择“安装扩展”，粘贴下面的仓库地址：
+
+`https://github.com/zhishimocha/jiuguan-plugin`
+
+安装完成后重启 SillyTavern，并在浏览器里强制刷新页面。角色列表分页工具栏会出现一个文件夹树图标。
 
 ## 功能
 
@@ -9,13 +17,11 @@
 - 总编辑：新建、重命名、移动、排序、合并和删除文件夹。删除文件夹只移除标签，不删除角色卡；子文件夹会提升一级。
 - 危险操作：清空全部标签前自动下载 JSON 备份。
 
-## 手机本地安装
+## 手机本地覆盖安装
 
-把整个 `bulk-tag-studio` 文件夹复制到：
+也可以把仓库中的四个文件复制到：
 
-`~/st/public/scripts/extensions/third-party/`
-
-然后重启 SillyTavern，并在浏览器里强制刷新页面。角色列表分页工具栏会出现一个文件夹树图标。
+`~/st/public/scripts/extensions/third-party/bulk-tag-studio/`
 
 如果原来已经安装 1.0 版，可以直接覆盖同名文件夹中的四个文件。插件的嵌套结构保存在酒馆设置中，原生标签本身仍由 SillyTavern 管理；即使停用插件，角色卡上的标签也不会消失。
 
