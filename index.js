@@ -18,8 +18,9 @@ import { DEFAULT_FILTER_STATE } from '../../../filters.js';
 import { download, equalsIgnoreCaseAndAccents, uuidv4 } from '../../../utils.js';
 
 const EXTENSION_KEY = 'bulkTagStudio';
-const PLUGIN_VERSION = '2.3.0';
+const PLUGIN_VERSION = '2.3.1';
 const selectedAvatars = new Set();
+const selectedTagIds = new Set();
 let recentTrackerBound = false;
 let updateReloadBound = false;
 const state = {
@@ -312,7 +313,7 @@ function renderPreview() {
     const preview = document.querySelector(selectors.preview);
     if (!input || !preview) return;
     preview.replaceChildren();
-    for (const name of parseTagNames(input.value)) {
+    for (const name of pendingTagNames()) {
         const chip = document.createElement('span');
         chip.className = 'btm-tag-chip';
         chip.textContent = name;
@@ -320,14 +321,58 @@ function renderPreview() {
     }
 }
 
-function resetCharacterActions() {
+function pendingTagNames() {
+    const names = [
+        ...tags.filter(tag => selectedTagIds.has(tag.id)).map(tag => tag.name),
+        ...parseTagNames(document.querySelector(selectors.input)?.value || ''),
+    ];
+    return names.filter((name, index) => names.findIndex(other => equalsIgnoreCaseAndAccents(other, name)) === index);
+}
+
+function renderExistingTagPicker() {
+    const picker = document.querySelector('#btm-existing-tags');
+    if (!picker) return;
+    const validIds = new Set(tags.map(tag => tag.id));
+    for (const id of selectedTagIds) {
+        if (!validIds.has(id)) selectedTagIds.delete(id);
+    }
+    picker.replaceChildren();
+    const sorted = [...tags].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN-u-co-pinyin', { sensitivity: 'base', numeric: true }));
+    if (!sorted.length) {
+        const empty = document.createElement('span');
+        empty.className = 'btm-existing-tags-empty';
+        empty.textContent = '暂无已有标签';
+        picker.append(empty);
+        return;
+    }
+    for (const tag of sorted) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btm-existing-tag';
+        button.classList.toggle('btm-active', selectedTagIds.has(tag.id));
+        button.textContent = tag.name;
+        button.title = `选择标签：${tag.name}`;
+        button.addEventListener('click', () => {
+            if (selectedTagIds.has(tag.id)) selectedTagIds.delete(tag.id);
+            else selectedTagIds.add(tag.id);
+            button.classList.toggle('btm-active', selectedTagIds.has(tag.id));
+            renderPreview();
+            setStatus('');
+        });
+        picker.append(button);
+    }
+}
+
+function resetCharacterActions({ render = true } = {}) {
     selectedAvatars.clear();
+    selectedTagIds.clear();
     const input = document.querySelector(selectors.input);
     if (input) input.value = '';
     const deleteChats = document.querySelector('#btm-delete-chats');
     if (deleteChats) deleteChats.checked = false;
+    renderExistingTagPicker();
     renderPreview();
-    renderCharacterList();
+    if (render) renderCharacterList();
 }
 
 function setStatus(message, isError = false) {
@@ -365,7 +410,7 @@ function refreshNativeTags() {
 }
 
 function applyTags() {
-    const names = parseTagNames(document.querySelector(selectors.input).value);
+    const names = pendingTagNames();
     if (!selectedAvatars.size) return setStatus('请先勾选角色卡。', true);
     if (!names.length) return setStatus('请输入至少一个标签。', true);
     if (names.some(name => name.length > 25)) return setStatus('每个标签最多 25 个字符。', true);
@@ -394,14 +439,27 @@ async function deleteSelectedCharacters() {
     const confirmed = window.confirm(`即将永久删除 ${targets.length} 张角色卡，${chatText}。\n\n此操作不能撤回，确定继续吗？`);
     if (!confirmed) return;
 
+    const expectedRemaining = Math.max(0, availableCharacters().length - targets.length);
     setStatus('正在删除，请不要关闭页面……');
     try {
         await deleteCharacter(targets, { deleteChats });
         setStatus(`已删除 ${targets.length} 张角色卡。`);
-        resetCharacterActions();
+        resetCharacterActions({ render: false });
+        await waitForCharacterRefresh(expectedRemaining);
+        renderCharacterList();
+        renderFoldersPage();
     } catch (error) {
         console.error('[角色卡整理器] 删除失败', error);
         setStatus('删除未完成，请查看酒馆提示或浏览器控制台。', true);
+    }
+}
+
+async function waitForCharacterRefresh(expectedRemaining) {
+    if (expectedRemaining === 0) return;
+    const started = Date.now();
+    while (Date.now() - started < 5000) {
+        if (availableCharacters().length >= expectedRemaining) return;
+        await new Promise(resolve => setTimeout(resolve, 80));
     }
 }
 
@@ -763,6 +821,7 @@ function openPanel() {
     root.hidden = false;
     document.body.classList.add('btm-open');
     cleanupFolderMetadata();
+    renderExistingTagPicker();
     renderPreview();
     switchTab(state.tab);
     if (state.tab === 'characters') document.querySelector(selectors.search)?.focus();
@@ -803,8 +862,17 @@ function createPanel() {
                 </div>
                 <div id="btm-character-list" class="btm-list"></div>
                 <div class="btm-composer">
-                    <label for="btm-tags-input">给已选角色添加标签</label>
-                    <textarea id="btm-tags-input" rows="2" placeholder="例如：年下 狗男，温柔"></textarea>
+                    <div class="btm-composer-title">给已选角色添加标签</div>
+                    <div class="btm-tag-input-grid">
+                        <section class="btm-existing-tag-column" aria-label="选择已有标签">
+                            <span>选择已有标签</span>
+                            <div id="btm-existing-tags" class="btm-existing-tags"></div>
+                        </section>
+                        <label class="btm-new-tag-column" for="btm-tags-input">
+                            <span>输入已有或新标签</span>
+                            <textarea id="btm-tags-input" rows="3" placeholder="例如：年下、温柔"></textarea>
+                        </label>
+                    </div>
                     <div id="btm-preview" class="btm-preview"></div>
                     <div id="btm-status" class="btm-status" role="status" aria-live="polite"></div>
                     <div class="btm-primary-actions">
