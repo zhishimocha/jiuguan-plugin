@@ -18,7 +18,7 @@ import { DEFAULT_FILTER_STATE } from '../../../filters.js';
 import { download, equalsIgnoreCaseAndAccents, uuidv4 } from '../../../utils.js';
 
 const EXTENSION_KEY = 'bulkTagStudio';
-const PLUGIN_VERSION = '2.5.0';
+const PLUGIN_VERSION = '2.6.0';
 const selectedAvatars = new Set();
 const selectedTagIds = new Set();
 let recentTrackerBound = false;
@@ -28,7 +28,7 @@ const state = {
     sort: 'recent',
     currentFolderId: null,
     folderFilterId: null,
-    editingFolderId: null,
+    movingFolderId: null,
     characterScope: 'all',
 };
 
@@ -503,19 +503,38 @@ function folderCount(folderId) {
 }
 
 function createRootFolderCard(tag) {
+    const item = document.createElement('span');
+    item.className = 'btm-folder-card-item';
     const open = document.createElement('button');
     open.type = 'button';
     open.className = 'btm-folder-card';
     open.innerHTML = `<span class="btm-folder-icon">📁</span><strong></strong><small></small>`;
     open.querySelector('strong').textContent = tag.name;
     open.querySelector('small').textContent = `${folderCount(tag.id)} 张角色卡 · ${childrenOf(tag.id).length} 个子文件夹`;
-    open.addEventListener('click', () => {
+    bindLongPressRename(open, tag.id);
+    open.addEventListener('click', event => {
+        if (open.dataset.longPressed === 'true') {
+            event.preventDefault();
+            open.dataset.longPressed = 'false';
+            return;
+        }
         state.currentFolderId = tag.id;
         state.folderFilterId = null;
-        state.editingFolderId = null;
+        state.movingFolderId = null;
         renderFoldersPage();
     });
-    return open;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'btm-folder-card-remove';
+    remove.textContent = '×';
+    remove.title = `删除分类“${tag.name}”`;
+    remove.setAttribute('aria-label', `删除分类 ${tag.name}`);
+    remove.addEventListener('click', event => {
+        event.stopPropagation();
+        deleteFolder(tag.id);
+    });
+    item.append(open, remove);
+    return item;
 }
 
 function descendantFolders(folderId) {
@@ -530,7 +549,7 @@ function renderSubfolderChips(container, folderId) {
     all.textContent = '全部';
     all.addEventListener('click', () => {
         state.folderFilterId = null;
-        state.editingFolderId = null;
+        state.movingFolderId = null;
         renderFoldersPage();
     });
     container.append(all);
@@ -544,30 +563,15 @@ function renderSubfolderChips(container, folderId) {
         chip.classList.toggle('btm-active', state.folderFilterId === folder.id);
         chip.textContent = folder.name;
         chip.title = `${folderPath(folder.id)}（长按修改名称）`;
-        let pressTimer = null;
-        let longPressed = false;
-        const cancelPress = () => {
-            if (pressTimer) clearTimeout(pressTimer);
-            pressTimer = null;
-        };
-        chip.addEventListener('pointerdown', () => {
-            longPressed = false;
-            pressTimer = setTimeout(() => {
-                longPressed = true;
-                quickRenameFolder(folder.id);
-            }, 550);
-        });
-        chip.addEventListener('pointerup', cancelPress);
-        chip.addEventListener('pointercancel', cancelPress);
-        chip.addEventListener('pointerleave', cancelPress);
+        bindLongPressRename(chip, folder.id);
         chip.addEventListener('click', event => {
-            if (longPressed) {
+            if (chip.dataset.longPressed === 'true') {
                 event.preventDefault();
-                longPressed = false;
+                chip.dataset.longPressed = 'false';
                 return;
             }
             state.folderFilterId = folder.id;
-            state.editingFolderId = null;
+            state.movingFolderId = null;
             renderFoldersPage();
         });
         const remove = document.createElement('button');
@@ -583,6 +587,25 @@ function renderSubfolderChips(container, folderId) {
         item.append(chip, remove);
         container.append(item);
     }
+}
+
+function bindLongPressRename(element, folderId) {
+    let pressTimer = null;
+    const cancelPress = () => {
+        if (pressTimer) clearTimeout(pressTimer);
+        pressTimer = null;
+    };
+    element.dataset.longPressed = 'false';
+    element.addEventListener('pointerdown', () => {
+        element.dataset.longPressed = 'false';
+        pressTimer = setTimeout(() => {
+            element.dataset.longPressed = 'true';
+            quickRenameFolder(folderId);
+        }, 550);
+    });
+    element.addEventListener('pointerup', cancelPress);
+    element.addEventListener('pointercancel', cancelPress);
+    element.addEventListener('pointerleave', cancelPress);
 }
 
 function quickRenameFolder(id) {
@@ -630,32 +653,55 @@ function createFolderCharacterCard(character) {
     return card;
 }
 
-function renderFolderEditor(container, tag) {
-    const editor = document.createElement('section');
-    editor.className = 'btm-folder-editor';
-    const invalidParents = new Set([tag.id, ...descendantIds(tag.id)]);
-    const choices = tags.filter(item => !invalidParents.has(item.id));
-    editor.innerHTML = `
-        <h3>编辑“${escapeHtml(tag.name)}”</h3>
-        <label>名称<input id="btm-edit-name" maxlength="25"></label>
-        <label>上级文件夹<select id="btm-edit-parent"><option value="">最外层</option></select></label>
-        <div class="btm-editor-actions">
-            <button type="button" data-action="save">保存修改</button>
-            <button type="button" data-action="delete" class="btm-danger">删除文件夹</button>
-        </div>`;
-    const nameInput = editor.querySelector('#btm-edit-name');
-    nameInput.value = tag.name;
-    const select = editor.querySelector('#btm-edit-parent');
-    for (const choice of choices) {
+function renderFolderMover(container, tag) {
+    const mover = document.createElement('section');
+    mover.className = 'btm-folder-mover';
+    const children = childrenOf(tag.id);
+    const oldParentId = parentOf(tag.id);
+    const otherFolders = tags.filter(item => item.id !== tag.id
+        && item.id !== oldParentId
+        && !descendantIds(tag.id).includes(item.id));
+    mover.innerHTML = `
+        <h3>移动“${escapeHtml(tag.name)}”</h3>
+        <div class="btm-move-row" data-kind="child">
+            <select aria-label="选择子分类"></select>
+            <button type="button">移入子类</button>
+        </div>
+        <div class="btm-move-row" data-kind="other">
+            <select aria-label="选择其他分类"></select>
+            <button type="button">移到其他分类</button>
+        </div>
+        <button type="button" class="btm-move-out">移出当前分类</button>`;
+    const childRow = mover.querySelector('[data-kind="child"]');
+    const childSelect = childRow.querySelector('select');
+    for (const child of children) {
         const option = document.createElement('option');
-        option.value = choice.id;
-        option.textContent = folderPath(choice.id);
-        select.append(option);
+        option.value = child.id;
+        option.textContent = child.name;
+        childSelect.append(option);
     }
-    select.value = parentOf(tag.id) || '';
-    editor.querySelector('[data-action="save"]').addEventListener('click', () => saveFolderEdit(tag.id, nameInput.value, select.value || null));
-    editor.querySelector('[data-action="delete"]').addEventListener('click', () => deleteFolder(tag.id));
-    container.append(editor);
+    childRow.querySelector('button').disabled = !children.length;
+    childSelect.disabled = !children.length;
+    if (!children.length) childSelect.append(new Option('暂无子分类', ''));
+    childRow.querySelector('button').addEventListener('click', () => moveFolder(tag.id, childSelect.value));
+
+    const otherRow = mover.querySelector('[data-kind="other"]');
+    const otherSelect = otherRow.querySelector('select');
+    for (const folder of otherFolders) {
+        const option = document.createElement('option');
+        option.value = folder.id;
+        option.textContent = folderPath(folder.id);
+        otherSelect.append(option);
+    }
+    otherRow.querySelector('button').disabled = !otherFolders.length;
+    otherSelect.disabled = !otherFolders.length;
+    if (!otherFolders.length) otherSelect.append(new Option('暂无其他分类', ''));
+    otherRow.querySelector('button').addEventListener('click', () => moveFolder(tag.id, otherSelect.value));
+
+    const out = mover.querySelector('.btm-move-out');
+    out.disabled = !parentOf(tag.id);
+    out.addEventListener('click', () => moveFolder(tag.id, parentOf(parentOf(tag.id))));
+    container.append(mover);
 }
 
 function folderPath(id) {
@@ -676,11 +722,11 @@ function createFolder(parentId) {
     if (!name) return;
     if (name.length > 25) return window.alert('文件夹名称最多 25 个字符。');
     const existing = tags.find(tag => equalsIgnoreCaseAndAccents(tag.name, name));
-    if (existing) return window.alert(`已有同名标签“${existing.name}”。可以在编辑中移动它，不会重复创建。`);
+    if (existing) return window.alert(`已有同名标签“${existing.name}”。可以使用“移动”调整它的位置，不会重复创建。`);
     const tag = makeTag(name);
     if (parentId) settings().folderParents[tag.id] = parentId;
     persist();
-    state.editingFolderId = null;
+    state.movingFolderId = null;
     if (parentId && state.currentFolderId) state.folderFilterId = tag.id;
     renderFoldersPage();
 }
@@ -703,8 +749,25 @@ function saveFolderEdit(id, rawName, newParentId) {
         else delete settings().folderParents[id];
         persist();
     }
-    state.editingFolderId = null;
+    state.movingFolderId = null;
     refreshNativeTags();
+    renderFoldersPage();
+}
+
+function moveFolder(id, newParentId) {
+    const tag = tagById(id);
+    if (!tag) return;
+    const oldParentId = parentOf(id);
+    if (newParentId === id || newParentId === oldParentId) return;
+    if (newParentId && descendantIds(id).includes(newParentId)) {
+        if (oldParentId) settings().folderParents[newParentId] = oldParentId;
+        else delete settings().folderParents[newParentId];
+    }
+    if (newParentId) settings().folderParents[id] = newParentId;
+    else delete settings().folderParents[id];
+    state.folderFilterId = null;
+    state.movingFolderId = null;
+    persist();
     renderFoldersPage();
 }
 
@@ -753,7 +816,7 @@ function deleteFolder(id) {
     if (tagIndex >= 0) tags.splice(tagIndex, 1);
     if (state.currentFolderId === id) state.currentFolderId = parentId;
     if (state.folderFilterId === id) state.folderFilterId = null;
-    state.editingFolderId = null;
+    state.movingFolderId = null;
     persist();
     refreshNativeTags();
     renderFoldersPage();
@@ -780,11 +843,13 @@ function renderFoldersPage() {
         back.addEventListener('click', () => {
             state.currentFolderId = null;
             state.folderFilterId = null;
-            state.editingFolderId = null;
+            state.movingFolderId = null;
             renderFoldersPage();
         });
         const title = document.createElement('strong');
         title.textContent = tagById(state.currentFolderId).name;
+        title.title = '长按修改名称';
+        bindLongPressRename(title, state.currentFolderId);
         heading.append(back, title);
     } else {
         const title = document.createElement('strong');
@@ -802,17 +867,17 @@ function renderFoldersPage() {
     add.addEventListener('click', () => createFolder(state.folderFilterId || state.currentFolderId));
     actions.append(add);
     if (state.currentFolderId) {
-        const edit = document.createElement('button');
-        edit.type = 'button';
-        edit.className = 'btm-folder-header-button';
-        edit.textContent = '编辑';
-        edit.title = '编辑当前一级分类';
-        edit.addEventListener('click', () => {
-            const targetId = state.currentFolderId;
-            state.editingFolderId = state.editingFolderId === targetId ? null : targetId;
+        const move = document.createElement('button');
+        move.type = 'button';
+        move.className = 'btm-folder-header-button';
+        move.textContent = '移动';
+        move.title = '移动当前选中的分类';
+        move.addEventListener('click', () => {
+            const targetId = state.folderFilterId || state.currentFolderId;
+            state.movingFolderId = state.movingFolderId === targetId ? null : targetId;
             renderFoldersPage();
         });
-        actions.append(edit);
+        actions.append(move);
     }
     header.append(heading, actions);
     page.append(header);
@@ -823,9 +888,9 @@ function renderFoldersPage() {
         renderSubfolderChips(subfolders, state.currentFolderId);
         page.append(subfolders);
 
-        if (state.editingFolderId) {
-            const editingFolder = tagById(state.editingFolderId);
-            if (editingFolder) renderFolderEditor(page, editingFolder);
+        if (state.movingFolderId) {
+            const movingFolder = tagById(state.movingFolderId);
+            if (movingFolder) renderFolderMover(page, movingFolder);
         }
 
         const cards = document.createElement('div');
@@ -860,7 +925,7 @@ function clearAllTags() {
         extension_settings[EXTENSION_KEY] = { schemaVersion: 2, folderParents: {}, folderOrder: [] };
         state.currentFolderId = null;
         state.folderFilterId = null;
-        state.editingFolderId = null;
+        state.movingFolderId = null;
         refreshNativeTags();
         renderCharacterList();
         renderFoldersPage();
