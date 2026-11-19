@@ -506,8 +506,6 @@ function renderFolderEditor(container, tag) {
         <label>上级文件夹<select id="btm-edit-parent"><option value="">最外层</option></select></label>
         <div class="btm-editor-actions">
             <button type="button" data-action="save">保存修改</button>
-            <button type="button" data-action="up">上移</button>
-            <button type="button" data-action="down">下移</button>
             <button type="button" data-action="delete" class="btm-danger">删除文件夹</button>
         </div>`;
     const nameInput = editor.querySelector('#btm-edit-name');
@@ -521,8 +519,6 @@ function renderFolderEditor(container, tag) {
     }
     select.value = parentOf(tag.id) || '';
     editor.querySelector('[data-action="save"]').addEventListener('click', () => saveFolderEdit(tag.id, nameInput.value, select.value || null));
-    editor.querySelector('[data-action="up"]').addEventListener('click', () => moveFolderOrder(tag.id, -1));
-    editor.querySelector('[data-action="down"]').addEventListener('click', () => moveFolderOrder(tag.id, 1));
     editor.querySelector('[data-action="delete"]').addEventListener('click', () => deleteFolder(tag.id));
     container.append(editor);
 }
@@ -601,19 +597,6 @@ function mergeFolders(sourceId, targetId, requestedParentId) {
     persist();
 }
 
-function moveFolderOrder(id, direction) {
-    const siblings = childrenOf(parentOf(id));
-    const index = siblings.findIndex(tag => tag.id === id);
-    const target = siblings[index + direction];
-    if (!target) return;
-    const order = settings().folderOrder;
-    const fromIndex = order.indexOf(id);
-    const toIndex = order.indexOf(target.id);
-    [order[fromIndex], order[toIndex]] = [order[toIndex], order[fromIndex]];
-    persist();
-    renderFoldersPage();
-}
-
 function deleteFolder(id) {
     const tag = tagById(id);
     if (!tag) return;
@@ -679,7 +662,7 @@ function renderFoldersPage() {
     const add = document.createElement('button');
     add.type = 'button';
     add.className = 'btm-folder-header-button';
-    add.textContent = '＋ 新建';
+    add.textContent = '新建';
     add.title = state.currentFolderId ? '在当前分类中新建子分类' : '新建一级分类';
     add.addEventListener('click', () => createFolder(state.folderFilterId || state.currentFolderId));
     actions.append(add);
@@ -831,7 +814,7 @@ function createPanel() {
                     <div id="btm-preview" class="btm-preview"></div>
                     <div id="btm-status" class="btm-status" role="status" aria-live="polite"></div>
                     <div class="btm-primary-actions">
-                        <button id="btm-apply" type="button">添加到已选角色</button>
+                        <button id="btm-apply" type="button">添加</button>
                     </div>
                     <div class="btm-delete-row">
                         <button id="btm-delete-selected" type="button" class="btm-danger">删除已选角色</button>

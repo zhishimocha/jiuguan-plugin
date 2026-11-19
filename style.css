@@ -1,3 +1,5 @@
+@import url("https://fontsapi.zeoseven.com/872/main/result.css");
+
 #btm-open {
     width: 32px;
     min-width: 32px;
@@ -25,7 +27,7 @@
     inset: 0;
     z-index: 100000;
     color: var(--btm-ink);
-    font: 15px/1.45 system-ui, sans-serif;
+    font: 15px/1.45 "ChillHuoFangKai_F", "KaiTi", "STKaiti", "FangSong", system-ui, sans-serif;
 }
 #btm-root * { box-sizing: border-box; }
 .btm-open { overflow: hidden; }
