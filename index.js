@@ -9,7 +9,6 @@ import {
     addTagsToEntity,
     getTagsList,
     printTagFilters,
-    removeTagFromEntity,
     tag_filter_type,
     tag_map,
     tags,
@@ -19,7 +18,7 @@ import { DEFAULT_FILTER_STATE } from '../../../filters.js';
 import { download, equalsIgnoreCaseAndAccents, uuidv4 } from '../../../utils.js';
 
 const EXTENSION_KEY = 'bulkTagStudio';
-const PLUGIN_VERSION = '2.4.0';
+const PLUGIN_VERSION = '2.5.0';
 const selectedAvatars = new Set();
 const selectedTagIds = new Set();
 let recentTrackerBound = false;
@@ -30,9 +29,7 @@ const state = {
     currentFolderId: null,
     folderFilterId: null,
     editingFolderId: null,
-    characterView: 'inspect',
     characterScope: 'all',
-    editingCharacterAvatar: null,
 };
 
 const selectors = {
@@ -221,7 +218,7 @@ function watchForUpdatedManifest() {
 
 function sortedCharacters(items, requestedSort = null) {
     const copy = [...items];
-    const sort = requestedSort || document.querySelector('#btm-sort')?.value || state.sort;
+    const sort = String(requestedSort || state.sort || document.querySelector('#btm-sort')?.value || 'recent').split(':')[0];
     if (sort === 'az') return copy.sort(localeNameCompare);
     if (sort === 'za') return copy.sort((a, b) => localeNameCompare(b, a));
     if (sort === 'newest') {
@@ -255,7 +252,7 @@ function thumbnailUrl(avatar) {
 
 function createCharacterRow(character, { selectable = true } = {}) {
     const row = document.createElement('div');
-    row.className = `btm-character btm-character-${state.characterView}`;
+    row.className = 'btm-character btm-character-quick';
     if (selectable) {
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
@@ -291,13 +288,13 @@ function createCharacterRow(character, { selectable = true } = {}) {
     assigned.className = 'btm-card-tags';
     const ownTags = characterTags(character);
     if (ownTags.length) {
-        const shownTags = state.characterView === 'quick' ? ownTags.slice(0, 2) : ownTags;
+        const shownTags = ownTags.slice(0, 2);
         for (const tag of shownTags) {
             const chip = document.createElement('small');
             chip.textContent = tag.name;
             assigned.append(chip);
         }
-        if (state.characterView === 'quick' && ownTags.length > shownTags.length) {
+        if (ownTags.length > shownTags.length) {
             const more = document.createElement('button');
             more.type = 'button';
             more.className = 'btm-more-tags';
@@ -321,15 +318,6 @@ function createCharacterRow(character, { selectable = true } = {}) {
     }
     details.append(name, assigned);
     row.append(image, details);
-    if (selectable) {
-        const edit = document.createElement('button');
-        edit.type = 'button';
-        edit.className = 'btm-card-edit-tags';
-        edit.textContent = '标签';
-        edit.setAttribute('aria-label', `编辑 ${character.name} 的标签`);
-        edit.addEventListener('click', () => openCharacterTagEditor(character));
-        row.append(edit);
-    }
     return row;
 }
 
@@ -342,7 +330,7 @@ function renderCharacterList({ preserveScroll = true } = {}) {
     const list = document.querySelector(selectors.list);
     if (!list) return;
     const previousScrollTop = preserveScroll ? list.scrollTop : 0;
-    list.classList.toggle('btm-quick-grid', state.characterView === 'quick');
+    list.classList.add('btm-quick-grid');
     const fragment = document.createDocumentFragment();
     const visible = visibleCharacters();
     for (const character of visible) fragment.append(createCharacterRow(character));
@@ -418,61 +406,6 @@ function resetCharacterActions({ render = true, preserveTags = false } = {}) {
     renderExistingTagPicker();
     renderPreview();
     if (render) renderCharacterList();
-}
-
-function closeCharacterTagEditor() {
-    const editor = document.querySelector('#btm-card-tag-editor');
-    if (editor) editor.hidden = true;
-    state.editingCharacterAvatar = null;
-}
-
-function openCharacterTagEditor(character) {
-    const editor = document.querySelector('#btm-card-tag-editor');
-    const title = document.querySelector('#btm-card-tag-editor-title');
-    const choices = document.querySelector('#btm-card-tag-choices');
-    const input = document.querySelector('#btm-card-new-tags');
-    if (!editor || !title || !choices || !input) return;
-    state.editingCharacterAvatar = character.avatar;
-    title.textContent = `编辑“${character.name}”的标签`;
-    input.value = '';
-    const ownIds = new Set(tag_map[character.avatar] || []);
-    choices.replaceChildren();
-    for (const tag of tagsByUsage()) {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'btm-editor-tag-choice';
-        button.dataset.tagId = tag.id;
-        button.classList.toggle('btm-active', ownIds.has(tag.id));
-        button.textContent = tag.name;
-        button.addEventListener('click', () => button.classList.toggle('btm-active'));
-        choices.append(button);
-    }
-    editor.hidden = false;
-}
-
-function saveCharacterTagEditor() {
-    const avatar = state.editingCharacterAvatar;
-    const character = availableCharacters().find(item => item.avatar === avatar);
-    if (!character) return closeCharacterTagEditor();
-    const activeIds = new Set([...document.querySelectorAll('#btm-card-tag-choices .btm-active')].map(button => button.dataset.tagId));
-    const ownIds = new Set(tag_map[avatar] || []);
-    for (const id of ownIds) {
-        if (!activeIds.has(id)) {
-            const tag = tagById(id);
-            if (tag) removeTagFromEntity(tag, avatar);
-        }
-    }
-    const newNames = parseTagNames(document.querySelector('#btm-card-new-tags')?.value || '');
-    const newTags = newNames.map(makeTag);
-    const additions = [...tags.filter(tag => activeIds.has(tag.id) && !ownIds.has(tag.id)), ...newTags];
-    if (additions.length) addTagsToEntity(additions, avatar);
-    refreshNativeTags();
-    closeCharacterTagEditor();
-    renderExistingTagPicker();
-    renderPreview();
-    renderCharacterList();
-    renderFoldersPage();
-    setStatus(`已更新“${character.name}”的标签。`);
 }
 
 function setStatus(message, isError = false) {
@@ -603,19 +536,61 @@ function renderSubfolderChips(container, folderId) {
     container.append(all);
 
     for (const folder of descendantFolders(folderId)) {
+        const item = document.createElement('span');
+        item.className = 'btm-subfolder-item';
         const chip = document.createElement('button');
         chip.type = 'button';
         chip.className = 'btm-subfolder-chip';
         chip.classList.toggle('btm-active', state.folderFilterId === folder.id);
         chip.textContent = folder.name;
-        chip.title = folderPath(folder.id);
-        chip.addEventListener('click', () => {
+        chip.title = `${folderPath(folder.id)}（长按修改名称）`;
+        let pressTimer = null;
+        let longPressed = false;
+        const cancelPress = () => {
+            if (pressTimer) clearTimeout(pressTimer);
+            pressTimer = null;
+        };
+        chip.addEventListener('pointerdown', () => {
+            longPressed = false;
+            pressTimer = setTimeout(() => {
+                longPressed = true;
+                quickRenameFolder(folder.id);
+            }, 550);
+        });
+        chip.addEventListener('pointerup', cancelPress);
+        chip.addEventListener('pointercancel', cancelPress);
+        chip.addEventListener('pointerleave', cancelPress);
+        chip.addEventListener('click', event => {
+            if (longPressed) {
+                event.preventDefault();
+                longPressed = false;
+                return;
+            }
             state.folderFilterId = folder.id;
             state.editingFolderId = null;
             renderFoldersPage();
         });
-        container.append(chip);
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'btm-subfolder-remove';
+        remove.textContent = '×';
+        remove.title = `删除子分类“${folder.name}”`;
+        remove.setAttribute('aria-label', `删除子分类 ${folder.name}`);
+        remove.addEventListener('click', event => {
+            event.stopPropagation();
+            deleteFolder(folder.id);
+        });
+        item.append(chip, remove);
+        container.append(item);
     }
+}
+
+function quickRenameFolder(id) {
+    const tag = tagById(id);
+    if (!tag) return;
+    const name = window.prompt(`修改“${tag.name}”的名称：`, tag.name)?.trim();
+    if (!name || name === tag.name) return;
+    saveFolderEdit(id, name, parentOf(id));
 }
 
 async function openCharacterFromFolder(character) {
@@ -831,9 +806,9 @@ function renderFoldersPage() {
         edit.type = 'button';
         edit.className = 'btm-folder-header-button';
         edit.textContent = '编辑';
-        edit.title = state.folderFilterId ? '编辑当前选中的子分类' : '编辑当前分类';
+        edit.title = '编辑当前一级分类';
         edit.addEventListener('click', () => {
-            const targetId = state.folderFilterId || state.currentFolderId;
+            const targetId = state.currentFolderId;
             state.editingFolderId = state.editingFolderId === targetId ? null : targetId;
             renderFoldersPage();
         });
@@ -949,72 +924,44 @@ function createPanel() {
                 <div class="btm-toolbar">
                     <div class="btm-search-sort">
                         <input id="btm-search" type="search" placeholder="搜索角色名或已有标签" aria-label="搜索角色名或已有标签">
-                        <select id="btm-sort" aria-label="排序方式">
-                            <option value="recent">最近玩</option>
-                            <option value="newest">最新加</option>
-                            <option value="az">A → Z</option>
-                            <option value="za">Z → A</option>
-                        </select>
-                    </div>
-                    <div class="btm-character-controls">
-                        <div class="btm-view-switch" aria-label="角色卡显示方式">
-                            <button type="button" class="btm-view-button btm-active" data-view="inspect">标签检查</button>
-                            <button type="button" class="btm-view-button" data-view="quick">快速选择</button>
-                        </div>
-                        <select id="btm-character-scope" aria-label="角色范围">
-                            <option value="all">全部角色</option>
-                            <option value="untagged">完全无标签</option>
-                            <option value="missing">未含所选标签</option>
+                        <select id="btm-sort" aria-label="排序与显示范围">
+                            <optgroup label="排序">
+                                <option value="recent:all">最近玩</option>
+                                <option value="newest:all">最新加</option>
+                                <option value="az:all">A → Z</option>
+                                <option value="za:all">Z → A</option>
+                            </optgroup>
+                            <optgroup label="显示范围">
+                                <option value="recent:untagged">完全无标签</option>
+                                <option value="recent:missing">未含所选标签</option>
+                            </optgroup>
                         </select>
                     </div>
                     <div class="btm-selection-bar">
                         <span id="btm-count"></span>
-                        <button id="btm-select-visible" type="button">全选结果</button>
                         <button id="btm-clear-selection" type="button">取消选择</button>
                     </div>
                 </div>
-                <div id="btm-character-list" class="btm-list"></div>
+                <div id="btm-character-list" class="btm-list btm-quick-grid"></div>
                 <div class="btm-composer">
-                    <div class="btm-composer-title">给已选角色添加标签</div>
-                    <div class="btm-tag-input-grid">
-                        <section class="btm-existing-tag-column" aria-label="选择已有标签">
-                            <span>选择已有标签</span>
-                            <select id="btm-existing-tags" class="btm-existing-tags" aria-label="选择已有标签"></select>
-                        </section>
-                        <label class="btm-new-tag-column" for="btm-tags-input">
-                            <span>输入已有或新标签</span>
-                            <textarea id="btm-tags-input" rows="3" placeholder="例如：年下、温柔"></textarea>
-                        </label>
-                    </div>
+                    <input id="btm-tags-input" type="text" placeholder="输入已有或新标签，例如：年下、温柔" aria-label="输入已有或新标签">
+                    <select id="btm-existing-tags" class="btm-existing-tags" aria-label="选择已有标签"></select>
                     <div id="btm-preview" class="btm-preview"></div>
-                    <div id="btm-status" class="btm-status" role="status" aria-live="polite"></div>
                     <div class="btm-primary-actions">
                         <button id="btm-apply" type="button">添加</button>
                     </div>
-                    <div class="btm-delete-row">
-                        <button id="btm-delete-selected" type="button" class="btm-danger">删除已选角色</button>
-                        <label class="btm-delete-chats"><input id="btm-delete-chats" type="checkbox"> 同时删除聊天记录</label>
-                    </div>
-                    <details class="btm-danger-zone btm-danger-zone-compact">
-                        <summary>高级操作</summary>
-                        <div class="btm-danger-content">
-                            <p>清空所有标签会先下载备份，不会删除角色卡。</p>
-                            <button id="btm-clear-all-tags" type="button">清空全部标签</button>
+                    <div id="btm-status" class="btm-status" role="status" aria-live="polite"></div>
+                    <details class="btm-batch-actions">
+                        <summary>更多操作</summary>
+                        <div class="btm-delete-row">
+                            <button id="btm-delete-selected" type="button" class="btm-danger">删除已选角色</button>
+                            <label class="btm-delete-chats"><input id="btm-delete-chats" type="checkbox"> 同时删除聊天记录</label>
                         </div>
+                        <button id="btm-clear-all-tags" type="button" class="btm-clear-tags-link">清空全部标签（自动备份）</button>
                     </details>
                 </div>
             </section>
             <section id="btm-folders-page" class="btm-page" hidden></section>
-            <div id="btm-card-tag-editor" class="btm-card-editor-backdrop" hidden>
-                <section class="btm-card-editor" role="dialog" aria-modal="true" aria-labelledby="btm-card-tag-editor-title">
-                    <header><h3 id="btm-card-tag-editor-title"></h3><button id="btm-card-editor-close" type="button" aria-label="关闭">✕</button></header>
-                    <p>点选保留或添加已有标签；取消选中会移除该标签。</p>
-                    <div id="btm-card-tag-choices" class="btm-card-tag-choices"></div>
-                    <label for="btm-card-new-tags">新增标签</label>
-                    <input id="btm-card-new-tags" type="text" placeholder="输入一个或多个新标签">
-                    <button id="btm-card-editor-save" type="button">保存修改</button>
-                </section>
-            </div>
         </section>`;
     document.body.append(root);
 
@@ -1023,16 +970,9 @@ function createPanel() {
     root.querySelectorAll('.btm-tab').forEach(button => button.addEventListener('click', () => switchTab(button.dataset.tab)));
     root.querySelector(selectors.search).addEventListener('input', renderCharacterList);
     root.querySelector('#btm-sort').addEventListener('change', event => {
-        state.sort = event.target.value;
-        renderCharacterList();
-    });
-    root.querySelectorAll('.btm-view-button').forEach(button => button.addEventListener('click', () => {
-        state.characterView = button.dataset.view;
-        root.querySelectorAll('.btm-view-button').forEach(item => item.classList.toggle('btm-active', item === button));
-        renderCharacterList();
-    }));
-    root.querySelector('#btm-character-scope').addEventListener('change', event => {
-        state.characterScope = event.target.value;
+        const [sort, scope] = event.target.value.split(':');
+        state.sort = sort;
+        state.characterScope = scope || 'all';
         selectedAvatars.clear();
         renderCharacterList({ preserveScroll: false });
     });
@@ -1050,18 +990,9 @@ function createPanel() {
     root.querySelector('#btm-apply').addEventListener('click', applyTags);
     root.querySelector('#btm-delete-selected').addEventListener('click', deleteSelectedCharacters);
     root.querySelector('#btm-clear-all-tags').addEventListener('click', clearAllTags);
-    root.querySelector('#btm-select-visible').addEventListener('click', () => {
-        for (const character of visibleCharacters()) selectedAvatars.add(character.avatar);
-        renderCharacterList();
-    });
     root.querySelector('#btm-clear-selection').addEventListener('click', () => {
         selectedAvatars.clear();
         renderCharacterList();
-    });
-    root.querySelector('#btm-card-editor-close').addEventListener('click', closeCharacterTagEditor);
-    root.querySelector('#btm-card-editor-save').addEventListener('click', saveCharacterTagEditor);
-    root.querySelector('#btm-card-tag-editor').addEventListener('click', event => {
-        if (event.target.id === 'btm-card-tag-editor') closeCharacterTagEditor();
     });
     document.addEventListener('keydown', event => {
         if (event.key === 'Escape' && !root.hidden) closePanel();
