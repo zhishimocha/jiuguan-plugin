@@ -126,6 +126,7 @@
 .btm-folder-page-title button { flex: none; width: 30px; padding: 0; border: 0; background: transparent; color: var(--btm-accent); font-size: 26px; cursor: pointer; }
 .btm-folder-page-actions { flex: none; display: flex; align-items: center; gap: 6px; }
 .btm-folder-header-button { min-height: 36px; padding: 6px 10px; border: 1px solid var(--btm-border); border-radius: 9px; background: var(--btm-surface); color: var(--btm-ink); font-weight: 650 !important; cursor: pointer; }
+.btm-folder-header-button:disabled { cursor: default; opacity: .45; }
 .btm-folder-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
 .btm-folder-list > .btm-empty { grid-column: 1 / -1; }
 .btm-folder-card-item { position: relative; min-width: 0; display: block; }
@@ -150,7 +151,9 @@
 .btm-move-out { display: block; width: 100%; }
 .btm-folder-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding-bottom: 10px; }
 .btm-folder-cards > .btm-empty { grid-column: 1 / -1; }
-.btm-folder-character { min-width: 0; padding: 0; overflow: hidden; border: 1px solid rgba(212, 173, 102, .45); border-radius: 12px; background: rgba(253, 254, 255, .88); color: var(--btm-ink); cursor: pointer; box-shadow: 0 4px 14px rgba(57, 108, 140, .1); }
+.btm-folder-character { position: relative; min-width: 0; padding: 0; overflow: hidden; border: 1px solid rgba(212, 173, 102, .45); border-radius: 12px; background: rgba(253, 254, 255, .88); color: var(--btm-ink); cursor: pointer; box-shadow: 0 4px 14px rgba(57, 108, 140, .1); }
+.btm-folder-character.btm-selected { border-color: var(--btm-accent); box-shadow: 0 0 0 2px rgba(78, 168, 213, .2), 0 4px 14px rgba(57, 108, 140, .13); }
+.btm-folder-character-check { position: absolute; top: 6px; left: 6px; width: 20px; height: 20px; margin: 0; accent-color: var(--btm-accent); z-index: 2; }
 .btm-folder-character img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; background: #fff; opacity: 1 !important; filter: none !important; mix-blend-mode: normal !important; }
 .btm-folder-character strong { display: block; min-height: 35px; padding: 7px 4px; overflow: hidden; text-align: center; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .btm-danger-zone { margin-top: 20px; padding: 10px 12px; border: 1px solid #cfb5b0; border-radius: 10px; background: #fff8f6; color: var(--btm-danger); }

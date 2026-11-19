@@ -18,8 +18,9 @@ import { DEFAULT_FILTER_STATE } from '../../../filters.js';
 import { download, equalsIgnoreCaseAndAccents, uuidv4 } from '../../../utils.js';
 
 const EXTENSION_KEY = 'bulkTagStudio';
-const PLUGIN_VERSION = '2.6.0';
+const PLUGIN_VERSION = '2.6.1';
 const selectedAvatars = new Set();
+const folderSelectedAvatars = new Set();
 const selectedTagIds = new Set();
 let recentTrackerBound = false;
 let updateReloadBound = false;
@@ -521,6 +522,7 @@ function createRootFolderCard(tag) {
         state.currentFolderId = tag.id;
         state.folderFilterId = null;
         state.movingFolderId = null;
+        folderSelectedAvatars.clear();
         renderFoldersPage();
     });
     const remove = document.createElement('button');
@@ -550,6 +552,7 @@ function renderSubfolderChips(container, folderId) {
     all.addEventListener('click', () => {
         state.folderFilterId = null;
         state.movingFolderId = null;
+        folderSelectedAvatars.clear();
         renderFoldersPage();
     });
     container.append(all);
@@ -572,6 +575,7 @@ function renderSubfolderChips(container, folderId) {
             }
             state.folderFilterId = folder.id;
             state.movingFolderId = null;
+            folderSelectedAvatars.clear();
             renderFoldersPage();
         });
         const remove = document.createElement('button');
@@ -639,18 +643,45 @@ async function openCharacterFromFolder(character) {
 }
 
 function createFolderCharacterCard(character) {
-    const card = document.createElement('button');
-    card.type = 'button';
+    const card = document.createElement('div');
     card.className = 'btm-folder-character';
+    card.classList.toggle('btm-selected', folderSelectedAvatars.has(character.avatar));
+    card.tabIndex = 0;
+    card.setAttribute('role', 'button');
     const image = document.createElement('img');
     image.src = thumbnailUrl(character.avatar);
     image.alt = '';
     image.loading = 'lazy';
     const name = document.createElement('strong');
     name.textContent = character.name;
-    card.append(image, name);
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'btm-folder-character-check';
+    checkbox.checked = folderSelectedAvatars.has(character.avatar);
+    checkbox.setAttribute('aria-label', `选择 ${character.name}`);
+    checkbox.addEventListener('click', event => event.stopPropagation());
+    checkbox.addEventListener('change', () => {
+        if (checkbox.checked) folderSelectedAvatars.add(character.avatar);
+        else folderSelectedAvatars.delete(character.avatar);
+        card.classList.toggle('btm-selected', checkbox.checked);
+        updateFolderMoveButton();
+    });
+    card.append(image, name, checkbox);
     card.addEventListener('click', () => openCharacterFromFolder(character));
+    card.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            openCharacterFromFolder(character);
+        }
+    });
     return card;
+}
+
+function updateFolderMoveButton() {
+    const move = document.querySelector('#btm-move-selected');
+    if (!move) return;
+    move.disabled = !folderSelectedAvatars.size;
+    move.textContent = folderSelectedAvatars.size ? `移动 (${folderSelectedAvatars.size})` : '移动';
 }
 
 function renderFolderMover(container, tag) {
@@ -662,7 +693,7 @@ function renderFolderMover(container, tag) {
         && item.id !== oldParentId
         && !descendantIds(tag.id).includes(item.id));
     mover.innerHTML = `
-        <h3>移动“${escapeHtml(tag.name)}”</h3>
+        <h3>移动已选 ${folderSelectedAvatars.size} 张角色卡</h3>
         <div class="btm-move-row" data-kind="child">
             <select aria-label="选择子分类"></select>
             <button type="button">移入子类</button>
@@ -683,7 +714,7 @@ function renderFolderMover(container, tag) {
     childRow.querySelector('button').disabled = !children.length;
     childSelect.disabled = !children.length;
     if (!children.length) childSelect.append(new Option('暂无子分类', ''));
-    childRow.querySelector('button').addEventListener('click', () => moveFolder(tag.id, childSelect.value));
+    childRow.querySelector('button').addEventListener('click', () => moveSelectedCharacters(tag.id, childSelect.value));
 
     const otherRow = mover.querySelector('[data-kind="other"]');
     const otherSelect = otherRow.querySelector('select');
@@ -696,11 +727,10 @@ function renderFolderMover(container, tag) {
     otherRow.querySelector('button').disabled = !otherFolders.length;
     otherSelect.disabled = !otherFolders.length;
     if (!otherFolders.length) otherSelect.append(new Option('暂无其他分类', ''));
-    otherRow.querySelector('button').addEventListener('click', () => moveFolder(tag.id, otherSelect.value));
+    otherRow.querySelector('button').addEventListener('click', () => moveSelectedCharacters(tag.id, otherSelect.value));
 
     const out = mover.querySelector('.btm-move-out');
-    out.disabled = !parentOf(tag.id);
-    out.addEventListener('click', () => moveFolder(tag.id, parentOf(parentOf(tag.id))));
+    out.addEventListener('click', () => moveSelectedCharacters(tag.id, parentOf(tag.id)));
     container.append(mover);
 }
 
@@ -754,20 +784,20 @@ function saveFolderEdit(id, rawName, newParentId) {
     renderFoldersPage();
 }
 
-function moveFolder(id, newParentId) {
-    const tag = tagById(id);
-    if (!tag) return;
-    const oldParentId = parentOf(id);
-    if (newParentId === id || newParentId === oldParentId) return;
-    if (newParentId && descendantIds(id).includes(newParentId)) {
-        if (oldParentId) settings().folderParents[newParentId] = oldParentId;
-        else delete settings().folderParents[newParentId];
+function moveSelectedCharacters(sourceFolderId, targetFolderId) {
+    if (!folderSelectedAvatars.size) return window.alert('请先勾选要移动的角色卡。');
+    const sourceIds = new Set([sourceFolderId, ...descendantIds(sourceFolderId)]);
+    for (const avatar of folderSelectedAvatars) {
+        if (!availableCharacters().some(character => character.avatar === avatar)) continue;
+        const current = Array.isArray(tag_map[avatar]) ? tag_map[avatar] : [];
+        const next = current.filter(id => !sourceIds.has(id));
+        if (targetFolderId && !next.includes(targetFolderId)) next.push(targetFolderId);
+        tag_map[avatar] = next;
     }
-    if (newParentId) settings().folderParents[id] = newParentId;
-    else delete settings().folderParents[id];
-    state.folderFilterId = null;
+    folderSelectedAvatars.clear();
     state.movingFolderId = null;
     persist();
+    refreshNativeTags();
     renderFoldersPage();
 }
 
@@ -828,6 +858,13 @@ function renderFoldersPage() {
     cleanupFolderMetadata();
     if (state.currentFolderId && !tagById(state.currentFolderId)) state.currentFolderId = null;
     if (state.folderFilterId && !tagById(state.folderFilterId)) state.folderFilterId = null;
+    if (state.currentFolderId) {
+        const activeFolderId = state.folderFilterId || state.currentFolderId;
+        const visibleAvatars = new Set(charactersForFolder(activeFolderId, true).map(character => character.avatar));
+        for (const avatar of folderSelectedAvatars) {
+            if (!visibleAvatars.has(avatar)) folderSelectedAvatars.delete(avatar);
+        }
+    }
     page.replaceChildren();
 
     const header = document.createElement('div');
@@ -844,6 +881,7 @@ function renderFoldersPage() {
             state.currentFolderId = null;
             state.folderFilterId = null;
             state.movingFolderId = null;
+            folderSelectedAvatars.clear();
             renderFoldersPage();
         });
         const title = document.createElement('strong');
@@ -870,9 +908,12 @@ function renderFoldersPage() {
         const move = document.createElement('button');
         move.type = 'button';
         move.className = 'btm-folder-header-button';
-        move.textContent = '移动';
-        move.title = '移动当前选中的分类';
+        move.id = 'btm-move-selected';
+        move.textContent = folderSelectedAvatars.size ? `移动 (${folderSelectedAvatars.size})` : '移动';
+        move.disabled = !folderSelectedAvatars.size;
+        move.title = '移动已勾选的角色卡';
         move.addEventListener('click', () => {
+            if (!folderSelectedAvatars.size) return;
             const targetId = state.folderFilterId || state.currentFolderId;
             state.movingFolderId = state.movingFolderId === targetId ? null : targetId;
             renderFoldersPage();
@@ -926,6 +967,7 @@ function clearAllTags() {
         state.currentFolderId = null;
         state.folderFilterId = null;
         state.movingFolderId = null;
+        folderSelectedAvatars.clear();
         refreshNativeTags();
         renderCharacterList();
         renderFoldersPage();
