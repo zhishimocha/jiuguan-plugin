@@ -9,6 +9,7 @@ import {
     addTagsToEntity,
     getTagsList,
     printTagFilters,
+    removeTagFromEntity,
     tag_filter_type,
     tag_map,
     tags,
@@ -18,7 +19,7 @@ import { DEFAULT_FILTER_STATE } from '../../../filters.js';
 import { download, equalsIgnoreCaseAndAccents, uuidv4 } from '../../../utils.js';
 
 const EXTENSION_KEY = 'bulkTagStudio';
-const PLUGIN_VERSION = '2.3.1';
+const PLUGIN_VERSION = '2.4.0';
 const selectedAvatars = new Set();
 const selectedTagIds = new Set();
 let recentTrackerBound = false;
@@ -29,6 +30,9 @@ const state = {
     currentFolderId: null,
     folderFilterId: null,
     editingFolderId: null,
+    characterView: 'inspect',
+    characterScope: 'all',
+    editingCharacterAvatar: null,
 };
 
 const selectors = {
@@ -113,6 +117,15 @@ function descendantIds(folderId) {
 
 function characterTags(character) {
     return getTagsList(character.avatar);
+}
+
+function tagUsageCount(tagId) {
+    return Object.values(tag_map).reduce((total, ids) => total + (Array.isArray(ids) && ids.includes(tagId) ? 1 : 0), 0);
+}
+
+function tagsByUsage() {
+    return [...tags].sort((a, b) => tagUsageCount(b.id) - tagUsageCount(a.id)
+        || a.name.localeCompare(b.name, 'zh-CN-u-co-pinyin', { sensitivity: 'base', numeric: true }));
 }
 
 function charactersForFolder(folderId, includeDescendants = true) {
@@ -221,6 +234,9 @@ function visibleCharacters() {
     const input = document.querySelector(selectors.search);
     const query = input?.value.trim().toLocaleLowerCase() || '';
     const filtered = availableCharacters().filter(character => {
+        const ownTagIds = new Set((tag_map[character.avatar] || []));
+        if (state.characterScope === 'untagged' && ownTagIds.size) return false;
+        if (state.characterScope === 'missing' && selectedTagIds.size && [...selectedTagIds].every(id => ownTagIds.has(id))) return false;
         if (!query) return true;
         return character.name.toLocaleLowerCase().includes(query)
             || characterTags(character).some(tag => tag.name.toLocaleLowerCase().includes(query));
@@ -238,21 +254,27 @@ function thumbnailUrl(avatar) {
 }
 
 function createCharacterRow(character, { selectable = true } = {}) {
-    const row = document.createElement(selectable ? 'label' : 'div');
-    row.className = 'btm-character';
+    const row = document.createElement('div');
+    row.className = `btm-character btm-character-${state.characterView}`;
     if (selectable) {
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.checked = selectedAvatars.has(character.avatar);
         checkbox.setAttribute('aria-label', `选择 ${character.name}`);
-        checkbox.addEventListener('change', () => {
+        const syncSelection = () => {
             if (checkbox.checked) selectedAvatars.add(character.avatar);
             else selectedAvatars.delete(character.avatar);
             row.classList.toggle('btm-selected', checkbox.checked);
             updateCount();
-        });
+        };
+        checkbox.addEventListener('change', syncSelection);
         row.classList.toggle('btm-selected', checkbox.checked);
         row.append(checkbox);
+        row.addEventListener('click', event => {
+            if (event.target.closest('button, input')) return;
+            checkbox.checked = !checkbox.checked;
+            syncSelection();
+        });
     }
 
     const image = document.createElement('img');
@@ -269,10 +291,27 @@ function createCharacterRow(character, { selectable = true } = {}) {
     assigned.className = 'btm-card-tags';
     const ownTags = characterTags(character);
     if (ownTags.length) {
-        for (const tag of ownTags) {
+        const shownTags = state.characterView === 'quick' ? ownTags.slice(0, 2) : ownTags;
+        for (const tag of shownTags) {
             const chip = document.createElement('small');
             chip.textContent = tag.name;
             assigned.append(chip);
+        }
+        if (state.characterView === 'quick' && ownTags.length > shownTags.length) {
+            const more = document.createElement('button');
+            more.type = 'button';
+            more.className = 'btm-more-tags';
+            more.textContent = `+${ownTags.length - shownTags.length}`;
+            more.title = '展开全部标签';
+            more.addEventListener('click', () => {
+                assigned.replaceChildren();
+                for (const tag of ownTags) {
+                    const chip = document.createElement('small');
+                    chip.textContent = tag.name;
+                    assigned.append(chip);
+                }
+            });
+            assigned.append(more);
         }
     } else {
         const empty = document.createElement('small');
@@ -282,22 +321,34 @@ function createCharacterRow(character, { selectable = true } = {}) {
     }
     details.append(name, assigned);
     row.append(image, details);
+    if (selectable) {
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'btm-card-edit-tags';
+        edit.textContent = '标签';
+        edit.setAttribute('aria-label', `编辑 ${character.name} 的标签`);
+        edit.addEventListener('click', () => openCharacterTagEditor(character));
+        row.append(edit);
+    }
     return row;
 }
 
 function updateCount() {
     const count = document.querySelector(selectors.count);
-    if (count) count.textContent = `已选 ${selectedAvatars.size} 张 · 共 ${availableCharacters().length} 张`;
+    if (count) count.textContent = `已选 ${selectedAvatars.size} 张 · 当前 ${visibleCharacters().length} / 共 ${availableCharacters().length} 张`;
 }
 
-function renderCharacterList() {
+function renderCharacterList({ preserveScroll = true } = {}) {
     const list = document.querySelector(selectors.list);
     if (!list) return;
+    const previousScrollTop = preserveScroll ? list.scrollTop : 0;
+    list.classList.toggle('btm-quick-grid', state.characterView === 'quick');
     const fragment = document.createDocumentFragment();
     const visible = visibleCharacters();
     for (const character of visible) fragment.append(createCharacterRow(character));
     if (!visible.length) fragment.append(emptyMessage('没有找到角色卡'));
     list.replaceChildren(fragment);
+    list.scrollTop = Math.min(previousScrollTop, Math.max(0, list.scrollHeight - list.clientHeight));
     updateCount();
 }
 
@@ -337,35 +388,29 @@ function renderExistingTagPicker() {
         if (!validIds.has(id)) selectedTagIds.delete(id);
     }
     picker.replaceChildren();
-    const sorted = [...tags].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN-u-co-pinyin', { sensitivity: 'base', numeric: true }));
+    const sorted = tagsByUsage();
     if (!sorted.length) {
-        const empty = document.createElement('span');
-        empty.className = 'btm-existing-tags-empty';
-        empty.textContent = '暂无已有标签';
-        picker.append(empty);
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = '暂无已有标签';
+        picker.append(option);
+        picker.disabled = true;
         return;
     }
+    picker.disabled = false;
+    if (!selectedTagIds.size) selectedTagIds.add(sorted[0].id);
     for (const tag of sorted) {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'btm-existing-tag';
-        button.classList.toggle('btm-active', selectedTagIds.has(tag.id));
-        button.textContent = tag.name;
-        button.title = `选择标签：${tag.name}`;
-        button.addEventListener('click', () => {
-            if (selectedTagIds.has(tag.id)) selectedTagIds.delete(tag.id);
-            else selectedTagIds.add(tag.id);
-            button.classList.toggle('btm-active', selectedTagIds.has(tag.id));
-            renderPreview();
-            setStatus('');
-        });
-        picker.append(button);
+        const option = document.createElement('option');
+        option.value = tag.id;
+        option.selected = selectedTagIds.has(tag.id);
+        option.textContent = `${tag.name}（${tagUsageCount(tag.id)}）`;
+        picker.append(option);
     }
 }
 
-function resetCharacterActions({ render = true } = {}) {
+function resetCharacterActions({ render = true, preserveTags = false } = {}) {
     selectedAvatars.clear();
-    selectedTagIds.clear();
+    if (!preserveTags) selectedTagIds.clear();
     const input = document.querySelector(selectors.input);
     if (input) input.value = '';
     const deleteChats = document.querySelector('#btm-delete-chats');
@@ -373,6 +418,61 @@ function resetCharacterActions({ render = true } = {}) {
     renderExistingTagPicker();
     renderPreview();
     if (render) renderCharacterList();
+}
+
+function closeCharacterTagEditor() {
+    const editor = document.querySelector('#btm-card-tag-editor');
+    if (editor) editor.hidden = true;
+    state.editingCharacterAvatar = null;
+}
+
+function openCharacterTagEditor(character) {
+    const editor = document.querySelector('#btm-card-tag-editor');
+    const title = document.querySelector('#btm-card-tag-editor-title');
+    const choices = document.querySelector('#btm-card-tag-choices');
+    const input = document.querySelector('#btm-card-new-tags');
+    if (!editor || !title || !choices || !input) return;
+    state.editingCharacterAvatar = character.avatar;
+    title.textContent = `编辑“${character.name}”的标签`;
+    input.value = '';
+    const ownIds = new Set(tag_map[character.avatar] || []);
+    choices.replaceChildren();
+    for (const tag of tagsByUsage()) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btm-editor-tag-choice';
+        button.dataset.tagId = tag.id;
+        button.classList.toggle('btm-active', ownIds.has(tag.id));
+        button.textContent = tag.name;
+        button.addEventListener('click', () => button.classList.toggle('btm-active'));
+        choices.append(button);
+    }
+    editor.hidden = false;
+}
+
+function saveCharacterTagEditor() {
+    const avatar = state.editingCharacterAvatar;
+    const character = availableCharacters().find(item => item.avatar === avatar);
+    if (!character) return closeCharacterTagEditor();
+    const activeIds = new Set([...document.querySelectorAll('#btm-card-tag-choices .btm-active')].map(button => button.dataset.tagId));
+    const ownIds = new Set(tag_map[avatar] || []);
+    for (const id of ownIds) {
+        if (!activeIds.has(id)) {
+            const tag = tagById(id);
+            if (tag) removeTagFromEntity(tag, avatar);
+        }
+    }
+    const newNames = parseTagNames(document.querySelector('#btm-card-new-tags')?.value || '');
+    const newTags = newNames.map(makeTag);
+    const additions = [...tags.filter(tag => activeIds.has(tag.id) && !ownIds.has(tag.id)), ...newTags];
+    if (additions.length) addTagsToEntity(additions, avatar);
+    refreshNativeTags();
+    closeCharacterTagEditor();
+    renderExistingTagPicker();
+    renderPreview();
+    renderCharacterList();
+    renderFoldersPage();
+    setStatus(`已更新“${character.name}”的标签。`);
 }
 
 function setStatus(message, isError = false) {
@@ -423,7 +523,9 @@ function applyTags() {
         const tagObjects = names.map(makeTag);
         const changed = addTagsToEntity(tagObjects, targets);
         setStatus(changed ? `已为 ${targets.length} 张角色卡添加：${names.join('、')}` : '这些角色卡已经有了所输入的标签。');
-        resetCharacterActions();
+        refreshNativeTags();
+        resetCharacterActions({ preserveTags: true });
+        renderFoldersPage();
     } catch (error) {
         console.error('[角色卡整理器] 添加失败', error);
         setStatus('添加失败，请查看浏览器控制台。', true);
@@ -854,6 +956,17 @@ function createPanel() {
                             <option value="za">Z → A</option>
                         </select>
                     </div>
+                    <div class="btm-character-controls">
+                        <div class="btm-view-switch" aria-label="角色卡显示方式">
+                            <button type="button" class="btm-view-button btm-active" data-view="inspect">标签检查</button>
+                            <button type="button" class="btm-view-button" data-view="quick">快速选择</button>
+                        </div>
+                        <select id="btm-character-scope" aria-label="角色范围">
+                            <option value="all">全部角色</option>
+                            <option value="untagged">完全无标签</option>
+                            <option value="missing">未含所选标签</option>
+                        </select>
+                    </div>
                     <div class="btm-selection-bar">
                         <span id="btm-count"></span>
                         <button id="btm-select-visible" type="button">全选结果</button>
@@ -866,7 +979,7 @@ function createPanel() {
                     <div class="btm-tag-input-grid">
                         <section class="btm-existing-tag-column" aria-label="选择已有标签">
                             <span>选择已有标签</span>
-                            <div id="btm-existing-tags" class="btm-existing-tags"></div>
+                            <select id="btm-existing-tags" class="btm-existing-tags" aria-label="选择已有标签"></select>
                         </section>
                         <label class="btm-new-tag-column" for="btm-tags-input">
                             <span>输入已有或新标签</span>
@@ -892,6 +1005,16 @@ function createPanel() {
                 </div>
             </section>
             <section id="btm-folders-page" class="btm-page" hidden></section>
+            <div id="btm-card-tag-editor" class="btm-card-editor-backdrop" hidden>
+                <section class="btm-card-editor" role="dialog" aria-modal="true" aria-labelledby="btm-card-tag-editor-title">
+                    <header><h3 id="btm-card-tag-editor-title"></h3><button id="btm-card-editor-close" type="button" aria-label="关闭">✕</button></header>
+                    <p>点选保留或添加已有标签；取消选中会移除该标签。</p>
+                    <div id="btm-card-tag-choices" class="btm-card-tag-choices"></div>
+                    <label for="btm-card-new-tags">新增标签</label>
+                    <input id="btm-card-new-tags" type="text" placeholder="输入一个或多个新标签">
+                    <button id="btm-card-editor-save" type="button">保存修改</button>
+                </section>
+            </div>
         </section>`;
     document.body.append(root);
 
@@ -902,6 +1025,26 @@ function createPanel() {
     root.querySelector('#btm-sort').addEventListener('change', event => {
         state.sort = event.target.value;
         renderCharacterList();
+    });
+    root.querySelectorAll('.btm-view-button').forEach(button => button.addEventListener('click', () => {
+        state.characterView = button.dataset.view;
+        root.querySelectorAll('.btm-view-button').forEach(item => item.classList.toggle('btm-active', item === button));
+        renderCharacterList();
+    }));
+    root.querySelector('#btm-character-scope').addEventListener('change', event => {
+        state.characterScope = event.target.value;
+        selectedAvatars.clear();
+        renderCharacterList({ preserveScroll: false });
+    });
+    root.querySelector('#btm-existing-tags').addEventListener('change', event => {
+        selectedTagIds.clear();
+        if (event.target.value) selectedTagIds.add(event.target.value);
+        renderPreview();
+        setStatus('');
+        if (state.characterScope === 'missing') {
+            selectedAvatars.clear();
+            renderCharacterList({ preserveScroll: false });
+        }
     });
     root.querySelector(selectors.input).addEventListener('input', () => { renderPreview(); setStatus(''); });
     root.querySelector('#btm-apply').addEventListener('click', applyTags);
@@ -914,6 +1057,11 @@ function createPanel() {
     root.querySelector('#btm-clear-selection').addEventListener('click', () => {
         selectedAvatars.clear();
         renderCharacterList();
+    });
+    root.querySelector('#btm-card-editor-close').addEventListener('click', closeCharacterTagEditor);
+    root.querySelector('#btm-card-editor-save').addEventListener('click', saveCharacterTagEditor);
+    root.querySelector('#btm-card-tag-editor').addEventListener('click', event => {
+        if (event.target.id === 'btm-card-tag-editor') closeCharacterTagEditor();
     });
     document.addEventListener('keydown', event => {
         if (event.key === 'Escape' && !root.hidden) closePanel();
