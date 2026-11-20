@@ -18,7 +18,7 @@ import { DEFAULT_FILTER_STATE } from '../../../filters.js';
 import { download, equalsIgnoreCaseAndAccents, uuidv4 } from '../../../utils.js';
 
 const EXTENSION_KEY = 'bulkTagStudio';
-const PLUGIN_VERSION = '2.6.4';
+const PLUGIN_VERSION = '2.6.5';
 const selectedAvatars = new Set();
 const folderSelectedAvatars = new Set();
 const selectedTagIds = new Set();
@@ -34,6 +34,7 @@ const state = {
     folderSelectionMode: false,
     rootActionMode: null,
     characterScope: 'all',
+    folderSearchQuery: '',
 };
 
 const selectors = {
@@ -237,7 +238,6 @@ function visibleCharacters() {
     const filtered = availableCharacters().filter(character => {
         const ownTagIds = new Set((tag_map[character.avatar] || []));
         if (state.characterScope === 'untagged' && ownTagIds.size) return false;
-        if (state.characterScope === 'missing' && selectedTagIds.size && [...selectedTagIds].every(id => ownTagIds.has(id))) return false;
         if (!query) return true;
         return character.name.toLocaleLowerCase().includes(query)
             || characterTags(character).some(tag => tag.name.toLocaleLowerCase().includes(query));
@@ -292,28 +292,49 @@ function createCharacterRow(character, { selectable = true } = {}) {
     assigned.className = 'btm-card-tags';
     const ownTags = characterTags(character);
     if (ownTags.length) {
-        const shownTags = ownTags.slice(0, 2);
-        for (const tag of shownTags) {
-            const chip = document.createElement('small');
-            chip.textContent = tag.name;
-            assigned.append(chip);
-        }
-        if (ownTags.length > shownTags.length) {
-            const more = document.createElement('button');
-            more.type = 'button';
-            more.className = 'btm-more-tags';
-            more.textContent = `+${ownTags.length - shownTags.length}`;
-            more.title = '展开全部标签';
-            more.addEventListener('click', () => {
-                assigned.replaceChildren();
-                for (const tag of ownTags) {
-                    const chip = document.createElement('small');
-                    chip.textContent = tag.name;
-                    assigned.append(chip);
-                }
-            });
-            assigned.append(more);
-        }
+        let expanded = false;
+        const renderAssignedTags = () => {
+            assigned.replaceChildren();
+            const shownTags = expanded ? ownTags : ownTags.slice(0, 3);
+            for (const tag of shownTags) {
+                const chip = document.createElement('small');
+                chip.textContent = tag.name;
+                assigned.append(chip);
+            }
+            if (!expanded && ownTags.length > shownTags.length) {
+                const more = document.createElement('small');
+                more.className = 'btm-more-tags';
+                more.textContent = `+${ownTags.length - shownTags.length}`;
+                more.title = '长按标签区域查看全部';
+                assigned.append(more);
+            }
+        };
+        let pressTimer = null;
+        let longPressed = false;
+        const cancelPress = () => {
+            if (pressTimer) clearTimeout(pressTimer);
+            pressTimer = null;
+        };
+        assigned.title = ownTags.length > 3 ? '长按查看全部标签' : '';
+        assigned.addEventListener('pointerdown', () => {
+            longPressed = false;
+            cancelPress();
+            pressTimer = setTimeout(() => {
+                expanded = !expanded;
+                longPressed = true;
+                renderAssignedTags();
+            }, 520);
+        });
+        assigned.addEventListener('pointerup', cancelPress);
+        assigned.addEventListener('pointercancel', cancelPress);
+        assigned.addEventListener('pointerleave', cancelPress);
+        assigned.addEventListener('click', event => {
+            event.stopPropagation();
+            if (longPressed) event.preventDefault();
+            longPressed = false;
+        });
+        assigned.addEventListener('contextmenu', event => event.preventDefault());
+        renderAssignedTags();
     } else {
         const empty = document.createElement('small');
         empty.className = 'btm-muted-chip';
@@ -458,8 +479,21 @@ function applyTags() {
 
     try {
         const tagObjects = names.map(makeTag);
+        const duplicateAssignments = targets.reduce((count, avatar) => {
+            const ownTagIds = new Set(tag_map[avatar] || []);
+            return count + tagObjects.filter(tag => ownTagIds.has(tag.id)).length;
+        }, 0);
+        const duplicateNames = tagObjects
+            .filter(tag => targets.every(avatar => (tag_map[avatar] || []).includes(tag.id)))
+            .map(tag => tag.name);
         const changed = addTagsToEntity(tagObjects, targets);
-        setStatus(changed ? `已为 ${targets.length} 张角色卡添加：${names.join('、')}` : '这些角色卡已经有了所输入的标签。');
+        if (!changed) {
+            setStatus(`标签“${duplicateNames.join('、') || names.join('、')}”已经存在，即使当前卡片未显示，也不会重复添加。`, true);
+        } else if (duplicateAssignments) {
+            setStatus(`已添加：${names.join('、')}；其中 ${duplicateAssignments} 处已有标签已自动跳过。`);
+        } else {
+            setStatus(`已为 ${targets.length} 张角色卡添加：${names.join('、')}`);
+        }
         refreshNativeTags();
         resetCharacterActions({ preserveTags: true });
         renderFoldersPage();
@@ -648,7 +682,7 @@ async function openCharacterFromFolder(character) {
     }
 }
 
-function createFolderCharacterCard(character) {
+function createFolderCharacterCard(character, { selectionMode = state.folderSelectionMode } = {}) {
     const card = document.createElement('div');
     card.className = 'btm-folder-character';
     card.classList.toggle('btm-selected', folderSelectedAvatars.has(character.avatar));
@@ -661,7 +695,7 @@ function createFolderCharacterCard(character) {
     const name = document.createElement('strong');
     name.textContent = character.name;
     card.append(image, name);
-    if (state.folderSelectionMode) {
+    if (selectionMode) {
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.className = 'btm-folder-character-check';
@@ -672,7 +706,7 @@ function createFolderCharacterCard(character) {
         card.append(checkbox);
     }
     card.addEventListener('click', () => {
-        if (!state.folderSelectionMode) return openCharacterFromFolder(character);
+        if (!selectionMode) return openCharacterFromFolder(character);
         setFolderCharacterSelected(character.avatar, !folderSelectedAvatars.has(character.avatar), card);
         const checkbox = card.querySelector('.btm-folder-character-check');
         if (checkbox) checkbox.checked = folderSelectedAvatars.has(character.avatar);
@@ -1079,6 +1113,31 @@ function renderFoldersPage() {
         if (!folderCharacters.length) cards.append(emptyMessage('这个分类里还没有角色卡'));
         page.append(cards);
     } else {
+        const search = document.createElement('input');
+        search.type = 'search';
+        search.className = 'btm-folder-search';
+        search.placeholder = '搜索角色卡名称或标签';
+        search.setAttribute('aria-label', '搜索分类中的角色卡');
+        search.value = state.folderSearchQuery;
+        const searchResults = document.createElement('div');
+        searchResults.className = 'btm-folder-search-results btm-folder-cards';
+        const updateSearchResults = () => {
+            const query = search.value.trim().toLocaleLowerCase();
+            state.folderSearchQuery = search.value;
+            searchResults.replaceChildren();
+            searchResults.hidden = !query;
+            folderList.hidden = Boolean(query);
+            if (!query) return;
+            const matches = sortedCharacters(availableCharacters().filter(character => (
+                character.name.toLocaleLowerCase().includes(query)
+                || characterTags(character).some(tag => tag.name.toLocaleLowerCase().includes(query))
+            )), 'recent');
+            for (const character of matches) {
+                searchResults.append(createFolderCharacterCard(character, { selectionMode: false }));
+            }
+            if (!matches.length) searchResults.append(emptyMessage('没有找到角色卡'));
+        };
+        page.append(search, searchResults);
         if (state.rootActionMode) {
             const hint = document.createElement('p');
             hint.className = 'btm-folder-action-hint';
@@ -1095,6 +1154,8 @@ function renderFoldersPage() {
         for (const folder of rootFolders) folderList.append(createRootFolderCard(folder));
         if (!rootFolders.length) folderList.append(emptyMessage('还没有标签。新建第一个分类吧。'));
         page.append(folderList);
+        search.addEventListener('input', updateSearchResults);
+        updateSearchResults();
     }
 }
 
@@ -1196,8 +1257,7 @@ function createPanel() {
                                 <option value="za:all">Z → A</option>
                             </optgroup>
                             <optgroup label="显示范围">
-                                <option value="recent:untagged">完全无标签</option>
-                                <option value="recent:missing">未含所选标签</option>
+                                <option value="recent:untagged">无标签</option>
                             </optgroup>
                         </select>
                     </div>
@@ -1245,10 +1305,6 @@ function createPanel() {
         if (event.target.value) selectedTagIds.add(event.target.value);
         renderPreview();
         setStatus('');
-        if (state.characterScope === 'missing') {
-            selectedAvatars.clear();
-            renderCharacterList({ preserveScroll: false });
-        }
     });
     root.querySelector(selectors.input).addEventListener('input', () => { renderPreview(); setStatus(''); });
     root.querySelector('#btm-apply').addEventListener('click', applyTags);
