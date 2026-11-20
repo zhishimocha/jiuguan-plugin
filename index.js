@@ -18,7 +18,7 @@ import { DEFAULT_FILTER_STATE } from '../../../filters.js';
 import { download, equalsIgnoreCaseAndAccents, uuidv4 } from '../../../utils.js';
 
 const EXTENSION_KEY = 'bulkTagStudio';
-const PLUGIN_VERSION = '2.6.3';
+const PLUGIN_VERSION = '2.6.4';
 const selectedAvatars = new Set();
 const folderSelectedAvatars = new Set();
 const selectedTagIds = new Set();
@@ -32,6 +32,7 @@ const state = {
     movingFolderId: null,
     movingCharactersFromFolderId: null,
     folderSelectionMode: false,
+    rootActionMode: null,
     characterScope: 'all',
 };
 
@@ -514,11 +515,28 @@ function createRootFolderCard(tag) {
     open.innerHTML = `<span class="btm-folder-icon">📁</span><strong></strong><small></small>`;
     open.querySelector('strong').textContent = tag.name;
     open.querySelector('small').textContent = `${folderCount(tag.id)} 张角色卡 · ${childrenOf(tag.id).length} 个子文件夹`;
+    if (state.rootActionMode) {
+        const marker = document.createElement('span');
+        marker.className = `btm-folder-action-marker ${state.rootActionMode === 'delete' ? 'btm-danger' : ''}`;
+        marker.textContent = state.rootActionMode === 'delete' ? '删' : '移';
+        marker.setAttribute('aria-hidden', 'true');
+        item.append(marker);
+    }
     bindLongPressRename(open, tag.id);
     open.addEventListener('click', event => {
         if (open.dataset.longPressed === 'true') {
             event.preventDefault();
             open.dataset.longPressed = 'false';
+            return;
+        }
+        if (state.rootActionMode === 'delete') {
+            deleteFolder(tag.id);
+            return;
+        }
+        if (state.rootActionMode === 'move') {
+            state.rootActionMode = null;
+            state.movingFolderId = tag.id;
+            renderFoldersPage();
             return;
         }
         state.currentFolderId = tag.id;
@@ -741,9 +759,10 @@ function renderFolderStructureMover(container, tag) {
     const currentParentId = parentOf(tag.id);
     editor.innerHTML = `
         <h3>移动分类“${escapeHtml(tag.name)}”</h3>
+        <p class="btm-folder-move-note">只调整文件夹层级，不会合并标签或角色卡。</p>
         <div class="btm-move-row">
             <select aria-label="选择目标分类"></select>
-            <button type="button" data-action="move">移入分类</button>
+            <button type="button" data-action="move">设为子分类</button>
         </div>
         ${currentParentId ? '<button type="button" class="btm-move-out" data-action="out">移出此文件夹</button>' : ''}`;
     const select = editor.querySelector('select');
@@ -786,6 +805,7 @@ function createFolder(parentId) {
     persist();
     state.movingFolderId = null;
     state.movingCharactersFromFolderId = null;
+    state.rootActionMode = null;
     state.folderSelectionMode = false;
     folderSelectedAvatars.clear();
     if (parentId && state.currentFolderId) state.folderFilterId = tag.id;
@@ -839,9 +859,15 @@ function moveSelectedCharacters(sourceFolderId, targetFolderId) {
 function moveFolderInto(folderId, targetFolderId) {
     if (!folderId || !targetFolderId || folderId === targetFolderId) return;
     if (descendantIds(folderId).includes(targetFolderId)) return window.alert('不能移进自己的子分类。');
+    const folder = tagById(folderId);
+    const target = tagById(targetFolderId);
+    if (!folder || !target) return;
+    const confirmed = window.confirm(`把“${folder.name}”放进“${target.name}”，成为它的子文件夹？\n\n这只会调整文件夹层级，不会合并标签或角色卡。`);
+    if (!confirmed) return;
     settings().folderParents[folderId] = targetFolderId;
     if (state.folderFilterId === folderId) state.folderFilterId = null;
     state.movingFolderId = null;
+    state.rootActionMode = null;
     persist();
     renderFoldersPage();
 }
@@ -854,6 +880,7 @@ function moveFolderOut(folderId) {
     else delete settings().folderParents[folderId];
     if (state.folderFilterId === folderId) state.folderFilterId = null;
     state.movingFolderId = null;
+    state.rootActionMode = null;
     persist();
     renderFoldersPage();
 }
@@ -887,7 +914,11 @@ function deleteFolder(id) {
     if (!tag) return;
     const parentId = parentOf(id);
     const confirmed = window.confirm(`删除文件夹“${tag.name}”？\n\n角色卡不会被删除；这个标签会从角色卡上移除，子文件夹会提升一级。`);
-    if (!confirmed) return;
+    if (!confirmed) {
+        state.rootActionMode = null;
+        renderFoldersPage();
+        return;
+    }
     for (const list of Object.values(tag_map)) {
         if (!Array.isArray(list)) continue;
         const index = list.indexOf(id);
@@ -905,6 +936,7 @@ function deleteFolder(id) {
     if (state.folderFilterId === id) state.folderFilterId = null;
     state.movingFolderId = null;
     state.movingCharactersFromFolderId = null;
+    state.rootActionMode = null;
     persist();
     refreshNativeTags();
     renderFoldersPage();
@@ -940,6 +972,7 @@ function renderFoldersPage() {
             state.folderFilterId = null;
             state.movingFolderId = null;
             state.movingCharactersFromFolderId = null;
+            state.rootActionMode = null;
             state.folderSelectionMode = false;
             folderSelectedAvatars.clear();
             renderFoldersPage();
@@ -964,27 +997,35 @@ function renderFoldersPage() {
     const activeFolderId = state.folderFilterId || state.currentFolderId;
     add.title = activeFolderId ? '在当前分类中新建子分类' : '新建一级分类';
     add.addEventListener('click', () => createFolder(activeFolderId));
-    if (state.currentFolderId) {
-        const remove = document.createElement('button');
-        remove.type = 'button';
-        remove.className = 'btm-folder-header-button btm-danger';
-        remove.textContent = '删除';
-        remove.title = `删除分类“${tagById(activeFolderId)?.name || ''}”`;
-        remove.addEventListener('click', () => deleteFolder(activeFolderId));
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'btm-folder-header-button btm-danger';
+    remove.textContent = '删除';
+    remove.title = state.currentFolderId ? `删除分类“${tagById(activeFolderId)?.name || ''}”` : '选择要删除的一级分类';
+    remove.classList.toggle('btm-active-action', state.rootActionMode === 'delete');
+    remove.addEventListener('click', () => {
+        if (state.currentFolderId) return deleteFolder(activeFolderId);
+        state.movingFolderId = null;
+        state.rootActionMode = state.rootActionMode === 'delete' ? null : 'delete';
+        renderFoldersPage();
+    });
 
-        const move = document.createElement('button');
-        move.type = 'button';
-        move.className = 'btm-folder-header-button';
-        move.textContent = '移动';
-        move.title = `移动分类“${tagById(activeFolderId)?.name || ''}”`;
-        move.addEventListener('click', () => {
+    const move = document.createElement('button');
+    move.type = 'button';
+    move.className = 'btm-folder-header-button';
+    move.textContent = '移动';
+    move.title = state.currentFolderId ? `移动分类“${tagById(activeFolderId)?.name || ''}”` : '选择要移动的一级分类';
+    move.classList.toggle('btm-active-action', state.rootActionMode === 'move');
+    move.addEventListener('click', () => {
+        if (state.currentFolderId) {
             state.movingFolderId = state.movingFolderId === activeFolderId ? null : activeFolderId;
-            renderFoldersPage();
-        });
-        actions.append(remove, add, move);
-    } else {
-        actions.append(add);
-    }
+        } else {
+            state.movingFolderId = null;
+            state.rootActionMode = state.rootActionMode === 'move' ? null : 'move';
+        }
+        renderFoldersPage();
+    });
+    actions.append(remove, add, move);
     header.append(heading, actions);
     page.append(header);
 
@@ -1038,6 +1079,16 @@ function renderFoldersPage() {
         if (!folderCharacters.length) cards.append(emptyMessage('这个分类里还没有角色卡'));
         page.append(cards);
     } else {
+        if (state.rootActionMode) {
+            const hint = document.createElement('p');
+            hint.className = 'btm-folder-action-hint';
+            hint.textContent = state.rootActionMode === 'delete' ? '请选择要删除的一级分类' : '请选择要移动的一级分类';
+            page.append(hint);
+        }
+        if (state.movingFolderId) {
+            const movingFolder = tagById(state.movingFolderId);
+            if (movingFolder) renderFolderStructureMover(page, movingFolder);
+        }
         const folderList = document.createElement('div');
         folderList.className = 'btm-folder-list';
         const rootFolders = childrenOf(null);
@@ -1064,6 +1115,7 @@ function clearAllTags() {
         state.folderFilterId = null;
         state.movingFolderId = null;
         state.movingCharactersFromFolderId = null;
+        state.rootActionMode = null;
         state.folderSelectionMode = false;
         folderSelectedAvatars.clear();
         refreshNativeTags();
@@ -1088,6 +1140,7 @@ function switchTab(tab) {
         state.folderSelectionMode = false;
         state.movingFolderId = null;
         state.movingCharactersFromFolderId = null;
+        state.rootActionMode = null;
         folderSelectedAvatars.clear();
     }
     document.querySelectorAll('.btm-tab').forEach(button => button.classList.toggle('btm-active', button.dataset.tab === tab));
